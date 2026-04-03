@@ -1,3 +1,4 @@
+// bám line ngon nhưng chưa tối ưu tốc độ
 #include "stm32f10x.h"
 #include "usart.h"
 #include "i2c.h"
