@@ -63,13 +63,15 @@ static const int16_t allowed_norm[4][3] = {
 #define TURN_LEFT_MS            900U
 #define TURN_POINT2_LEFT_MS     500U
 #define TURN_POINT3_LEFT_MS     400U
-#define TURN_POINT4_LEFT_MS     250U
+#define TURN_POINT4_LEFT_MS     320U
 
 #define POINT1_CONFIRM_COUNT    3U
 #define POINT2_CONFIRM_COUNT    3U
-#define POINT3_CONFIRM_COUNT    12U   /* Tăng lên 12 để tránh nhiễu điểm 3 */
+#define POINT3_CONFIRM_COUNT    12U
 #define POINT4_CONFIRM_COUNT    3U
-#define POINT5_CONFIRM_COUNT    3U
+
+/* tăng để chắc hơn khi dừng ở vàng */
+#define POINT5_CONFIRM_COUNT    6U
 
 /* Bỏ qua tín hiệu tìm điểm 3 trong 1 giây đầu sau khi xong điểm 2 */
 #define POINT3_BLIND_TIME_MS    1000U 
@@ -100,7 +102,7 @@ static const int16_t allowed_norm[4][3] = {
    IN4 = PB15
    ========================================================= */
 #define PWM_PERIOD              999U
-#define SPEED_SCALE_PERCENT     30U
+#define SPEED_SCALE_PERCENT     32U
 #define MIN_EFFECTIVE_PWM       140U
 
 /* toc do chung */
@@ -110,7 +112,7 @@ static const int16_t allowed_norm[4][3] = {
 #define PWM_SPIN                720U
 
 /* toc do cham dung cho point4, va gio dung them cho doan point2 -> point3 */
-#define PWM_FORWARD_RED_SLOW    580U
+#define PWM_FORWARD_RED_SLOW    600U
 #define PWM_TURN_OUTER_RED_SLOW 600U
 #define PWM_TURN_INNER_RED_SLOW 180U
 
@@ -338,7 +340,6 @@ static void remote_read_color(RemoteColor *res)
         return;
     }
 
-    /* NHAN CA YELLOW = 3 */
     if (code <= 3U) {
         res->idx = (int8_t)code;
         res->match = 1;
@@ -480,16 +481,25 @@ static uint8_t detect_point4(const SensorResult *local, const RemoteColor *remot
     return (uint8_t)(local_red || remote_red || local_blue || remote_blue);
 }
 
-/* Diem 5: đang bám Đỏ sau point4, gặp VÀNG (YELLOW) là kích hoạt */
+/*
+ * Diem 5:
+ * Sau point4 đang bám ĐỎ, chỉ dừng khi:
+ * - thấy VÀNG
+ * - đồng thời KHÔNG còn thấy ĐỎ
+ * như vậy sẽ tránh đang ở line đỏ mà bị kích nhầm điểm 5
+ */
 static uint8_t detect_point5(const SensorResult *local, const RemoteColor *remote)
 {
     uint8_t local_yellow  = local_has_color(local, COLOR_YELLOW);
     uint8_t remote_yellow = remote_has_color(remote, COLOR_YELLOW);
+    uint8_t local_red     = local_has_color(local, COLOR_RED);
+    uint8_t remote_red    = remote_has_color(remote, COLOR_RED);
 
-    return (uint8_t)(local_yellow || remote_yellow);
+    uint8_t yellow_seen = (uint8_t)(local_yellow || remote_yellow);
+    uint8_t red_seen    = (uint8_t)(local_red || remote_red);
+
+    return (uint8_t)(yellow_seen && (!red_seen));
 }
-
-/* --- BỎ HÀM DỪNG, CHỈ QUAY TRỰC TIẾP --- */
 
 static void handle_point1(void)
 {
@@ -519,7 +529,7 @@ static void handle_point2(void)
 
     g_target_color = COLOR_BLUE;
     g_point2_done = 1;
-    g_point2_done_ms = millis(); // LƯU MỐC THỜI GIAN ĐỂ CHỐNG NHIỄU Ở ĐIỂM 3
+    g_point2_done_ms = millis();
     g_after_point4_red_mode = 0;
 
     g_last_seek_move = MOVE_LEFT;
@@ -547,7 +557,7 @@ static void handle_point3(void)
 static void handle_point4(void)
 {
 #if DEBUG_UART
-    uart_printf("POINT4 -> LEFT 400 -> FOLLOW RED_SLOW\r\n");
+    uart_printf("POINT4 -> LEFT 250 -> FOLLOW RED_SLOW\r\n");
 #endif
 
     Motor_TurnLeft_InPlace();
@@ -568,10 +578,8 @@ static void handle_point5(void)
     uart_printf("POINT5 (YELLOW) -> BRAKE -> STOP FOREVER\r\n");
 #endif
 
-    /* Điểm 5 là điểm cuối nên giữ phanh cứng để dừng hẳn */
     Motor_Brake(BRAKE_MS);
     Motor_Stop();
-    
     g_stop_forever = 1;
 }
 
@@ -646,7 +654,7 @@ static void process_remote_and_local(void)
     remote_read_color(&remote);
     local_sensor_read_and_classify(&g_local_sensor);
 
-    /* ===== pha 1: bam do, gap xanh duong/xanh la = diem 1 ===== */
+    /* ===== pha 1 ===== */
     if ((!g_point1_done) && (g_target_color == COLOR_RED) && detect_point1(&g_local_sensor, &remote)) {
         if (g_point1_counter < 255U) g_point1_counter++;
     } else {
@@ -661,7 +669,7 @@ static void process_remote_and_local(void)
         return;
     }
 
-    /* ===== pha 2: dang bam xanh la, chi can gap xanh duong = diem 2 ===== */
+    /* ===== pha 2 ===== */
     if (g_point1_done && (!g_point2_done) && (g_target_color == COLOR_GREEN) &&
         detect_point2(&g_local_sensor, &remote)) {
         if (g_point2_counter < 255U) g_point2_counter++;
@@ -677,9 +685,8 @@ static void process_remote_and_local(void)
         return;
     }
 
-    /* ===== pha 3: dang bam xanh duong, gap xanh la = diem 3 ===== */
+    /* ===== pha 3 ===== */
     if (g_point2_done && (!g_point3_done) && (g_target_color == COLOR_BLUE)) {
-        /* Chỉ dò tìm điểm 3 nếu xe đã rời khỏi điểm 2 được một thời gian (vượt khoảng mù) */
         if ((now - g_point2_done_ms) > POINT3_BLIND_TIME_MS) {
             if (detect_point3(&g_local_sensor, &remote)) {
                 if (g_point3_counter < 255U) g_point3_counter++;
@@ -687,7 +694,7 @@ static void process_remote_and_local(void)
                 g_point3_counter = 0;
             }
         } else {
-            g_point3_counter = 0; /* Đang trong thời gian mù, không cộng dồn */
+            g_point3_counter = 0;
         }
     }
 
@@ -699,7 +706,7 @@ static void process_remote_and_local(void)
         return;
     }
 
-    /* ===== pha 4: dang bam xanh la sau point3, gap do hoac xanh duong = diem 4 ===== */
+    /* ===== pha 4 ===== */
     if (g_point3_done && (!g_point4_done) && (g_target_color == COLOR_GREEN) &&
         detect_point4(&g_local_sensor, &remote)) {
         if (g_point4_counter < 255U) g_point4_counter++;
@@ -715,7 +722,7 @@ static void process_remote_and_local(void)
         return;
     }
 
-    /* ===== pha 5: sau diem 4 (dang bam DO), gap VANG = diem 5 DUNG HẲN ===== */
+    /* ===== pha 5: chỉ dừng khi đã ra khỏi đỏ và vào vàng ===== */
     if (g_point4_done && (!g_stop_forever) && (g_target_color == COLOR_RED) &&
         detect_point5(&g_local_sensor, &remote)) {
         if (g_point5_counter < 255U) g_point5_counter++;
@@ -733,7 +740,6 @@ static void process_remote_and_local(void)
 
     state = decide_move(&g_local_sensor, &remote);
 
-    /* TU POINT2 DEN POINT3 hoac SAU POINT4 dung toc do cham */
     if ((g_point2_done && !g_point3_done && (g_target_color == COLOR_BLUE)) ||
         (g_after_point4_red_mode && (g_target_color == COLOR_RED))) {
         apply_move_red_slow(state);
@@ -758,7 +764,7 @@ static void process_remote_and_local(void)
             g_last_local_valid = g_local_sensor.valid;
             g_last_move_state = state;
 
-            uart_printf("T:%c L:%c R:%c M:%d MEM:%d P1:%d P2:%d P3:%d P4:%d RS:%d STOP:%d\r\n",
+            uart_printf("T:%c L:%c R:%c M:%d MEM:%d P1:%d P2:%d P3:%d P4:%d P5C:%d RS:%d STOP:%d\r\n",
                         target_char(g_target_color),
                         lc, rc,
                         (int)state,
@@ -767,6 +773,7 @@ static void process_remote_and_local(void)
                         (int)g_point2_done,
                         (int)g_point3_done,
                         (int)g_point4_done,
+                        (int)g_point5_counter,
                         (int)g_after_point4_red_mode,
                         (int)g_stop_forever);
         }
