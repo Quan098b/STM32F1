@@ -60,10 +60,10 @@ static const int16_t allowed_norm[4][3] = {
 
 /* ===== logic ===== */
 #define BRAKE_MS                120U
-#define TURN_LEFT_MS            900U
-#define TURN_POINT2_LEFT_MS     500U
+#define TURN_LEFT_MS            670U
+#define TURN_POINT2_LEFT_MS     350U
 #define TURN_POINT3_LEFT_MS     400U
-#define TURN_POINT4_LEFT_MS     320U
+#define TURN_POINT4_LEFT_MS     200U
 
 #define POINT1_CONFIRM_COUNT    3U
 #define POINT2_CONFIRM_COUNT    3U
@@ -74,7 +74,7 @@ static const int16_t allowed_norm[4][3] = {
 #define POINT5_CONFIRM_COUNT    6U
 
 /* Bỏ qua tín hiệu tìm điểm 3 trong 1 giây đầu sau khi xong điểm 2 */
-#define POINT3_BLIND_TIME_MS    1000U 
+#define POINT3_BLIND_TIME_MS    700U 
 
 /* =========================================================
    REMOTE COLOR INPUT FROM SENDER BOARD
@@ -102,17 +102,17 @@ static const int16_t allowed_norm[4][3] = {
    IN4 = PB15
    ========================================================= */
 #define PWM_PERIOD              999U
-#define SPEED_SCALE_PERCENT     32U
+#define SPEED_SCALE_PERCENT     38U
 #define MIN_EFFECTIVE_PWM       140U
 
 /* toc do chung */
-#define PWM_FORWARD             850U
-#define PWM_TURN_OUTER          680U
-#define PWM_TURN_INNER          500U
+#define PWM_FORWARD             900U
+#define PWM_TURN_OUTER          550U
+#define PWM_TURN_INNER          150U
 #define PWM_SPIN                720U
 
 /* toc do cham dung cho point4, va gio dung them cho doan point2 -> point3 */
-#define PWM_FORWARD_RED_SLOW    600U
+#define PWM_FORWARD_RED_SLOW    670U
 #define PWM_TURN_OUTER_RED_SLOW 600U
 #define PWM_TURN_INNER_RED_SLOW 180U
 
