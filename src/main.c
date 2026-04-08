@@ -61,20 +61,24 @@ static const int16_t allowed_norm[4][3] = {
 /* ===== logic ===== */
 #define BRAKE_MS                120U
 #define TURN_LEFT_MS            670U
-#define TURN_POINT2_LEFT_MS     350U
+#define TURN_POINT2_LEFT_MS     470U
 #define TURN_POINT3_LEFT_MS     400U
-#define TURN_POINT4_LEFT_MS     200U
+#define TURN_POINT4_LEFT_MS     170U
 
 #define POINT1_CONFIRM_COUNT    3U
 #define POINT2_CONFIRM_COUNT    3U
 #define POINT3_CONFIRM_COUNT    12U
 #define POINT4_CONFIRM_COUNT    3U
-
-/* tăng để chắc hơn khi dừng ở vàng */
 #define POINT5_CONFIRM_COUNT    6U
 
-/* Bỏ qua tín hiệu tìm điểm 3 trong 1 giây đầu sau khi xong điểm 2 */
-#define POINT3_BLIND_TIME_MS    700U 
+#define POINT3_BLIND_TIME_MS    700U
+
+/* ===== CHIEN THUAT KHOI DONG =====
+   Lui -> khoa banh 500ms (coi nhu diem 1) -> tien 1 doan -> bat line do di diem 2
+*/
+#define START_BACKWARD_MS       1200U
+#define START_BRAKE_MS          500U
+#define START_FORWARD_MS        1700U
 
 /* =========================================================
    REMOTE COLOR INPUT FROM SENDER BOARD
@@ -105,16 +109,21 @@ static const int16_t allowed_norm[4][3] = {
 #define SPEED_SCALE_PERCENT     38U
 #define MIN_EFFECTIVE_PWM       140U
 
-/* toc do chung */
-#define PWM_FORWARD             900U
-#define PWM_TURN_OUTER          550U
-#define PWM_TURN_INNER          150U
+/* ===== toc do bam line chung ===== */
+#define PWM_FORWARD             605U
+#define PWM_TURN_OUTER          580U
+#define PWM_TURN_INNER          180U
 #define PWM_SPIN                720U
+#define PWM_BACKWARD            780U
 
-/* toc do cham dung cho point4, va gio dung them cho doan point2 -> point3 */
-#define PWM_FORWARD_RED_SLOW    670U
-#define PWM_TURN_OUTER_RED_SLOW 600U
-#define PWM_TURN_INNER_RED_SLOW 180U
+/* ===== toc do rieng cho khoi dong ===== */
+#define PWM_START_FORWARD       600U 
+#define PWM_START_BACKWARD      780U
+
+/* ===== toc do cham dung cho point4, va doan point2 -> point3 ===== */
+#define PWM_FORWARD_RED_SLOW    540U
+#define PWM_TURN_OUTER_RED_SLOW 550U
+#define PWM_TURN_INNER_RED_SLOW 130U
 
 static volatile uint32_t g_ms_ticks = 0;
 static uint32_t g_last_print_ms = 0;
@@ -130,7 +139,7 @@ static uint8_t g_have_seek_memory = 0;
 static MoveState g_last_move_state = MOVE_STOP;
 
 /* logic diem */
-static int8_t g_target_color = COLOR_RED;     /* luc dau bam line do */
+static int8_t g_target_color = COLOR_RED;
 static uint8_t g_point1_done = 0;
 static uint8_t g_point2_done = 0;
 static uint8_t g_point3_done = 0;
@@ -144,7 +153,7 @@ static uint8_t g_stop_forever = 0;
 static uint8_t g_after_point4_red_mode = 0;
 
 /* Mốc thời gian để tính khoảng mù */
-static uint32_t g_point2_done_ms = 0; 
+static uint32_t g_point2_done_ms = 0;
 
 void SysTick_Handler(void)
 {
@@ -250,6 +259,14 @@ static void Motor_SetForwardDirection(void)
     GPIOB->ODR &= ~(1U << 15);
 }
 
+static void Motor_SetBackwardDirection(void)
+{
+    GPIOB->ODR &= ~(1U << 12);
+    GPIOB->ODR |=  (1U << 13);
+    GPIOB->ODR &= ~(1U << 14);
+    GPIOB->ODR |=  (1U << 15);
+}
+
 static void Motor_Stop(void)
 {
     TIM3->CCR3 = 0;
@@ -257,10 +274,30 @@ static void Motor_Stop(void)
     GPIOB->ODR &= ~((1U << 12) | (1U << 13) | (1U << 14) | (1U << 15));
 }
 
+/* ===== toc do bam line ===== */
 static void Motor_Forward(void)
 {
     Motor_SetForwardDirection();
     Motor_SetPWM(PWM_FORWARD, PWM_FORWARD);
+}
+
+static void Motor_Backward(void)
+{
+    Motor_SetBackwardDirection();
+    Motor_SetPWM(PWM_BACKWARD, PWM_BACKWARD);
+}
+
+/* ===== toc do khoi dong rieng ===== */
+static void Motor_Forward_Start(void)
+{
+    Motor_SetForwardDirection();
+    Motor_SetPWM(PWM_START_FORWARD, PWM_START_FORWARD);
+}
+
+static void Motor_Backward_Start(void)
+{
+    Motor_SetBackwardDirection();
+    Motor_SetPWM(PWM_START_BACKWARD, PWM_START_BACKWARD);
 }
 
 static void Motor_Bias_Left(void)
@@ -300,7 +337,6 @@ static void Motor_Brake(uint32_t ms)
     TIM3->CCR3 = PWM_PERIOD;
     TIM3->CCR4 = PWM_PERIOD;
 
-    /* active brake */
     GPIOB->ODR |= (1U << 12);
     GPIOB->ODR |= (1U << 13);
     GPIOB->ODR |= (1U << 14);
@@ -312,7 +348,6 @@ static void Motor_Brake(uint32_t ms)
     TIM3->CCR4 = 0;
 }
 
-/* Quay trai tai cho */
 static void Motor_TurnLeft_InPlace(void)
 {
     /* Left motor forward */
@@ -444,21 +479,15 @@ static uint8_t remote_has_color(const RemoteColor *remote, int8_t color)
     return (remote->valid && remote->match && (remote->idx == color)) ? 1U : 0U;
 }
 
-/* Diem 1: dang bam do ma thay xanh duong hoac xanh la */
-static uint8_t detect_point1(const SensorResult *local, const RemoteColor *remote)
-{
-    uint8_t local_point  = local_has_color(local, COLOR_BLUE)  || local_has_color(local, COLOR_GREEN);
-    uint8_t remote_point = remote_has_color(remote, COLOR_BLUE) || remote_has_color(remote, COLOR_GREEN);
-    return (uint8_t)(local_point || remote_point);
-}
-
-/* Diem 2: dang bam xanh la, chi can thay XANH_DUONG la kich hoat */
+/* Diem 2 moi: dang bam DO, thay XANH_DUONG hoac XANH_LA thi kich hoat */
 static uint8_t detect_point2(const SensorResult *local, const RemoteColor *remote)
 {
-    uint8_t local_blue  = local_has_color(local, COLOR_BLUE);
-    uint8_t remote_blue = remote_has_color(remote, COLOR_BLUE);
+    uint8_t local_blue   = local_has_color(local, COLOR_BLUE);
+    uint8_t remote_blue  = remote_has_color(remote, COLOR_BLUE);
+    uint8_t local_green  = local_has_color(local, COLOR_GREEN);
+    uint8_t remote_green = remote_has_color(remote, COLOR_GREEN);
 
-    return (uint8_t)(local_blue || remote_blue);
+    return (uint8_t)(local_blue || remote_blue || local_green || remote_green);
 }
 
 /* Diem 3: dang bam xanh duong, chi can thay XANH_LA la kich hoat */
@@ -481,13 +510,10 @@ static uint8_t detect_point4(const SensorResult *local, const RemoteColor *remot
     return (uint8_t)(local_red || remote_red || local_blue || remote_blue);
 }
 
-/*
- * Diem 5:
- * Sau point4 đang bám ĐỎ, chỉ dừng khi:
- * - thấy VÀNG
- * - đồng thời KHÔNG còn thấy ĐỎ
- * như vậy sẽ tránh đang ở line đỏ mà bị kích nhầm điểm 5
- */
+/* Sau point4 đang bám ĐỎ, chỉ dừng khi:
+   - thấy VÀNG
+   - đồng thời KHÔNG còn thấy ĐỎ
+*/
 static uint8_t detect_point5(const SensorResult *local, const RemoteColor *remote)
 {
     uint8_t local_yellow  = local_has_color(local, COLOR_YELLOW);
@@ -501,27 +527,10 @@ static uint8_t detect_point5(const SensorResult *local, const RemoteColor *remot
     return (uint8_t)(yellow_seen && (!red_seen));
 }
 
-static void handle_point1(void)
-{
-#if DEBUG_UART
-    uart_printf("POINT1 -> LEFT -> FOLLOW GREEN\r\n");
-#endif
-
-    Motor_TurnLeft_InPlace();
-    delay_ms_tick(TURN_LEFT_MS);
-
-    g_target_color = COLOR_GREEN;
-    g_point1_done = 1;
-    g_after_point4_red_mode = 0;
-
-    g_last_seek_move = MOVE_LEFT;
-    g_have_seek_memory = 1;
-}
-
 static void handle_point2(void)
 {
 #if DEBUG_UART
-    uart_printf("POINT2 -> LEFT 500 -> FOLLOW BLUE_SLOW\r\n");
+    uart_printf("POINT2 -> LEFT -> FOLLOW BLUE (logic cu)\r\n");
 #endif
 
     Motor_TurnLeft_InPlace();
@@ -539,7 +548,7 @@ static void handle_point2(void)
 static void handle_point3(void)
 {
 #if DEBUG_UART
-    uart_printf("POINT3 -> LEFT 400 -> FOLLOW GREEN\r\n");
+    uart_printf("POINT3 -> LEFT -> FOLLOW GREEN\r\n");
 #endif
 
     Motor_TurnLeft_InPlace();
@@ -557,7 +566,7 @@ static void handle_point3(void)
 static void handle_point4(void)
 {
 #if DEBUG_UART
-    uart_printf("POINT4 -> LEFT 250 -> FOLLOW RED_SLOW\r\n");
+    uart_printf("POINT4 -> LEFT -> FOLLOW RED_SLOW\r\n");
 #endif
 
     Motor_TurnLeft_InPlace();
@@ -639,6 +648,46 @@ static void Sensor_Init_Local(void)
     delay_ms_tick(10);
 }
 
+/* ===== CHUOI KHOI DONG ===== */
+static void startup_strategy(void)
+{
+#if DEBUG_UART
+    uart_printf("START -> BACKWARD_START -> BRAKE500 -> FORWARD_START -> FOLLOW RED TO P2\r\n");
+#endif
+
+    Motor_Backward_Start();
+    delay_ms_tick(START_BACKWARD_MS);
+
+    Motor_Brake(START_BRAKE_MS);
+
+    /* coi nhu da den diem 1 */
+    g_point1_done = 1;
+
+    /* reset trang thai truoc khi vao bam line do */
+    g_target_color = COLOR_RED;
+    g_point2_done = 0;
+    g_point3_done = 0;
+    g_point4_done = 0;
+    g_point1_counter = 0;
+    g_point2_counter = 0;
+    g_point3_counter = 0;
+    g_point4_counter = 0;
+    g_point5_counter = 0;
+    g_stop_forever = 0;
+    g_after_point4_red_mode = 0;
+    g_have_seek_memory = 1;
+    g_last_seek_move = MOVE_FORWARD;
+    g_last_move_state = MOVE_FORWARD;
+
+    /* tien thang den vung line do bang toc do khoi dong rieng */
+    Motor_Forward_Start();
+    delay_ms_tick(START_FORWARD_MS);
+
+#if DEBUG_UART
+    uart_printf("START DONE -> FOLLOW RED\r\n");
+#endif
+}
+
 static void process_remote_and_local(void)
 {
     RemoteColor remote;
@@ -654,23 +703,11 @@ static void process_remote_and_local(void)
     remote_read_color(&remote);
     local_sensor_read_and_classify(&g_local_sensor);
 
-    /* ===== pha 1 ===== */
-    if ((!g_point1_done) && (g_target_color == COLOR_RED) && detect_point1(&g_local_sensor, &remote)) {
-        if (g_point1_counter < 255U) g_point1_counter++;
-    } else {
-        g_point1_counter = 0;
-    }
-
-    if ((!g_point1_done) && (g_point1_counter >= POINT1_CONFIRM_COUNT)) {
-        g_point1_counter = 0;
-        handle_point1();
-        g_last_move_state = MOVE_STOP;
-        delay_ms_tick(SENSOR_LOOP_DELAY_MS);
-        return;
-    }
-
-    /* ===== pha 2 ===== */
-    if (g_point1_done && (!g_point2_done) && (g_target_color == COLOR_GREEN) &&
+    /* ===== pha 2 moi =====
+       Sau chuoi khoi dong, bam DO den diem 2
+       Diem 2 nhan XANH_DUONG hoac XANH_LA
+    */
+    if (g_point1_done && (!g_point2_done) && (g_target_color == COLOR_RED) &&
         detect_point2(&g_local_sensor, &remote)) {
         if (g_point2_counter < 255U) g_point2_counter++;
     } else {
@@ -722,7 +759,7 @@ static void process_remote_and_local(void)
         return;
     }
 
-    /* ===== pha 5: chỉ dừng khi đã ra khỏi đỏ và vào vàng ===== */
+    /* ===== pha 5 ===== */
     if (g_point4_done && (!g_stop_forever) && (g_target_color == COLOR_RED) &&
         detect_point5(&g_local_sensor, &remote)) {
         if (g_point5_counter < 255U) g_point5_counter++;
@@ -795,6 +832,8 @@ int main(void)
     PWM_TIM3_Init();
     Motor_Stop();
     Sensor_Init_Local();
+
+    startup_strategy();
 
     while (1)
     {
