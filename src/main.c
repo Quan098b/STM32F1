@@ -61,7 +61,7 @@ static const int16_t allowed_norm[4][3] = {
 /* ===== logic ===== */
 #define BRAKE_MS                120U
 #define TURN_LEFT_MS            670U
-#define TURN_POINT2_LEFT_MS     470U
+#define TURN_POINT2_LEFT_MS     570U
 #define TURN_POINT3_LEFT_MS     400U
 #define TURN_POINT4_LEFT_MS     170U
 
@@ -117,8 +117,8 @@ static const int16_t allowed_norm[4][3] = {
 #define PWM_BACKWARD            780U
 
 /* ===== toc do rieng cho khoi dong ===== */
-#define PWM_START_FORWARD       600U 
-#define PWM_START_BACKWARD      780U
+#define PWM_START_FORWARD       900U 
+#define PWM_START_BACKWARD      880U
 
 /* ===== toc do cham dung cho point4, va doan point2 -> point3 ===== */
 #define PWM_FORWARD_RED_SLOW    540U
