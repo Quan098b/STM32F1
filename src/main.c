@@ -30,14 +30,12 @@
 #define PWM_BRAKE               999U
 #define BRAKE_PULSE_MS          60U
 
-#define PWM_REVERSE_NORMAL      230U
+#define PWM_REVERSE_NORMAL      210U
 #define PWM_REVERSE_HALF        200U
 
-// đi thẳng bị lệch
-#define PWM_ALIGN_NORMAL        310U
+/* dùng chung cho lúc bị lệch và lúc recovery */
+#define PWM_ALIGN_NORMAL        430U
 #define PWM_ALIGN_SEEN_80       380U
-
-
 
 #define MATCH_THRESHOLD         18000UL
 
@@ -48,7 +46,7 @@
    CÁC THÔNG SỐ ĐIỀU CHỈNH THỜI GIAN CUA (RẼ)
    ======================================================== */
 #define TURN_PULSE_MS           3U
-#define TRANSITION_TURN_MS      600U
+#define TRANSITION_TURN_MS      450U
 
 typedef struct {
     int r;
@@ -460,11 +458,11 @@ int main(void)
     last_right_on_ms = millis();
 
     uart_printf("Logic Line Following:\r\n");
-    uart_printf("- Muc tieu: DO -> XANH DUONG\r\n");
-    uart_printf("- LECH LINE => KHONG NHICH NUA, DI TIEN LECH TOC DO\r\n");
-    uart_printf("- BEN THAY LINE DI 80%%, BEN CHUA THAY DI 100%%\r\n");
+    uart_printf("- Muc tieu: RED -> BLUE tai DIEM 1\r\n");
+    uart_printf("- Neu thay BLUE hoac GREEN thi dung lai, quay, roi bam BLUE\r\n");
+    uart_printf("- LECH LINE => DI TIEN LECH TOC DO DUNG BO PWM_ALIGN\r\n");
     uart_printf("- 2 BEN KHONG NHAN MAU => LUI BAT DOI XUNG DEN KHI THAY LAI LINE\r\n");
-    uart_printf("- SAU KHI LUI: 1 BEN THAY LINE => BEN THAY DI 80%%, BEN CHUA THAY DI 100%%\r\n\r\n");
+    uart_printf("- SAU KHI LUI: 1 BEN THAY LINE => TIEP TUC DUNG BO PWM_ALIGN\r\n\r\n");
 
     while (1) {
         const char *motor_state_str = "STOP";
@@ -475,12 +473,28 @@ int main(void)
         classify_color(&right_raw, allowed_norm_right, &right_res);
         classify_color(&left_raw,  allowed_norm_left,  &left_res);
 
-        /* Chuyển từ line ĐỎ sang XANH DƯƠNG */
+        /* =====================================================
+           DIEM 1:
+           Dang bam RED, neu thay BLUE hoac GREEN
+           (1 cam bien hoac ca 2 cam bien) thi:
+           - dung lai
+           - quay
+           - chuyen sang bam BLUE
+           ===================================================== */
         if (current_target == COLOR_RED) {
-            if (left_res.idx == COLOR_BLUE || right_res.idx == COLOR_BLUE) {
+            uint8_t point1_detect = 0U;
+
+            if ((left_res.idx == COLOR_BLUE)  || (right_res.idx == COLOR_BLUE) ||
+                (left_res.idx == COLOR_GREEN) || (right_res.idx == COLOR_GREEN)) {
+                point1_detect = 1U;
+            }
+
+            if (point1_detect) {
+                uart_printf("\r\n=== DIEM 1: THAY BLUE/GREEN -> DUNG, QUAY, BAM BLUE ===\r\n");
+
+                motor_brake_pulse_then_stop(PWM_BRAKE, BRAKE_PULSE_MS);
+
                 current_target = COLOR_BLUE;
-                uart_printf("\r\n=== DA CHUYEN MUC TIEU SANG LINE XANH DUONG ===\r\n");
-                uart_printf(">>> Thuc hien re: Banh phai tien, Banh trai dung...\r\n");
 
                 motor_right_forward_left_stop(PWM_FORWARD);
                 delay_ms_tick(TRANSITION_TURN_MS);
@@ -512,18 +526,16 @@ int main(void)
                 motor_state_str = "FORWARD";
             }
             else if (left_go && !right_go) {
-                /* LEFT thấy màu, RIGHT chưa thấy:
-                   LEFT đi 80%, RIGHT đi 100% */
-                motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
+                /* LEFT thay line, RIGHT chua thay */
+                motor_forward_lr(PWM_ALIGN_SEEN_80, PWM_ALIGN_NORMAL);
                 was_moving = 1U;
-                motor_state_str = "RECOVER_FWD_L80_R100";
+                motor_state_str = "RECOVER_ALIGN_L_R";
             }
             else if (!left_go && right_go) {
-                /* RIGHT thấy màu, LEFT chưa thấy:
-                   RIGHT đi 80%, LEFT đi 100% */
+                /* RIGHT thay line, LEFT chua thay */
                 motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
                 was_moving = 1U;
-                motor_state_str = "RECOVER_FWD_L100_R80";
+                motor_state_str = "RECOVER_ALIGN_R_L";
             }
             else {
                 left_reverse_pwm  = PWM_REVERSE_NORMAL;
@@ -552,30 +564,28 @@ int main(void)
                 motor_state_str = "FORWARD";
             }
             else if (!left_go && right_go) {
-                /* RIGHT thấy line, LEFT chưa thấy:
-                   RIGHT đi 80%, LEFT đi 100% */
-                motor_forward_lr(PWM_TRACK_NORMAL, PWM_TRACK_SEEN_80);
+                /* RIGHT thay line, LEFT chua thay */
+                motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
                 was_moving = 1U;
-                motor_state_str = "TRACK_FWD_L100_R80";
+                motor_state_str = "TRACK_ALIGN_R";
             }
             else if (left_go && !right_go) {
-                /* LEFT thấy line, RIGHT chưa thấy:
-                   LEFT đi 80%, RIGHT đi 100% */
+                /* LEFT thay line, RIGHT chua thay */
                 motor_forward_lr(PWM_ALIGN_SEEN_80, PWM_ALIGN_NORMAL);
                 was_moving = 1U;
-                motor_state_str = "TRACK_FWD_L80_R100";
+                motor_state_str = "TRACK_ALIGN_L";
             }
             else {
-                /* Cả 2 đều mất line -> vào recovery lùi */
+                /* Ca 2 deu mat line -> vao recovery lui */
                 if (last_left_on_ms < last_right_on_ms) {
-                    recovery_first_lost_side = -1; /* LEFT mất trước */
-                    recovery_last_lost_side  = +1; /* RIGHT mất sau */
+                    recovery_first_lost_side = -1; /* LEFT mat truoc */
+                    recovery_last_lost_side  = +1; /* RIGHT mat sau */
                     left_reverse_pwm  = PWM_REVERSE_HALF;
                     right_reverse_pwm = PWM_REVERSE_NORMAL;
                     motor_state_str = "BACK_L50_R100";
                 } else if (last_right_on_ms < last_left_on_ms) {
-                    recovery_first_lost_side = +1; /* RIGHT mất trước */
-                    recovery_last_lost_side  = -1; /* LEFT mất sau */
+                    recovery_first_lost_side = +1; /* RIGHT mat truoc */
+                    recovery_last_lost_side  = -1; /* LEFT mat sau */
                     left_reverse_pwm  = PWM_REVERSE_NORMAL;
                     right_reverse_pwm = PWM_REVERSE_HALF;
                     motor_state_str = "BACK_L100_R50";
