@@ -11,6 +11,6 @@ void Motor_MoveForward(void);
 void Motor_MoveBackward(void);
 void Motor_TurnLeft(void);
 void Motor_TurnRight(void);
-void Motor_Stop(void);
+void MotorControl_Stop(void);
 
 #endif

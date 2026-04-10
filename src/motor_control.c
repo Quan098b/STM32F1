@@ -72,7 +72,7 @@ void Motor_TurnRight(void)
     GPIOA->ODR &= ~((1 << 4) | (1 << 7));
 }
 
-void Motor_Stop(void)
+void MotorControl_Stop(void)
 {
     GPIOA->ODR &= ~((1 << 4) | (1 << 5) | (1 << 6) | (1 << 7));
 }
