@@ -470,7 +470,7 @@ int main(void)
            Dang bam RED, neu thay BLUE hoac GREEN
            (1 cam bien hoac ca 2 cam bien) thi:
            - khoa banh dung 0.2s
-           - quay
+           - quay bang 1 banh tien, 1 banh lui
            - chuyen sang bam BLUE
            ===================================================== */
         if (current_target == COLOR_RED) {
@@ -488,7 +488,8 @@ int main(void)
 
                 current_target = COLOR_BLUE;
 
-                motor_right_forward_left_stop(PWM_FORWARD);
+                /* quay tai cho: 1 banh lui, 1 banh tien */
+                motor_turn_left(PWM_FORWARD);
                 delay_ms_tick(TRANSITION_TURN_MS);
 
                 motor_stop();
@@ -506,7 +507,7 @@ int main(void)
            Dang bam BLUE, neu thay RED hoac GREEN
            (1 cam bien hoac ca 2 cam bien) thi:
            - khoa banh dung 0.2s
-           - quay 0.3s
+           - quay 0.3s bang 1 banh tien, 1 banh lui
            - chuyen sang bam GREEN
            ===================================================== */
         if (current_target == COLOR_BLUE) {
@@ -524,7 +525,8 @@ int main(void)
 
                 current_target = COLOR_GREEN;
 
-                motor_right_forward_left_stop(PWM_FORWARD);
+                /* quay tai cho: 1 banh lui, 1 banh tien */
+                motor_turn_left(PWM_FORWARD);
                 delay_ms_tick(POINT3_TURN_MS);
 
                 motor_stop();
