@@ -27,8 +27,17 @@
 
 #define PWM_PERIOD              999U
 #define PWM_FORWARD             500U
-#define PWM_BRAKE       999U
-#define BRAKE_PULSE_MS  60U
+#define PWM_BRAKE               999U
+#define BRAKE_PULSE_MS          60U
+
+#define PWM_REVERSE_NORMAL      230U
+#define PWM_REVERSE_HALF        200U
+
+// đi thẳng bị lệch
+#define PWM_ALIGN_NORMAL        310U
+#define PWM_ALIGN_SEEN_80       380U
+
+
 
 #define MATCH_THRESHOLD         18000UL
 
@@ -38,11 +47,8 @@
 /* =========================================================
    CÁC THÔNG SỐ ĐIỀU CHỈNH THỜI GIAN CUA (RẼ)
    ======================================================== */
-#define TURN_PULSE_MS           3U    /* Thời gian nhịp rẽ bám line bình thường (ms) */
-
-/* <=== ĐIỂM 1: CHỈNH THỜI GIAN CUA KHI CHUYỂN TỪ ĐỎ SANG XANH DƯƠNG Ở ĐÂY ===> */
-#define TRANSITION_TURN_MS      600U  /* (ms) - Tăng/giảm số này để xe cua vừa đủ vào line Xanh */
-
+#define TURN_PULSE_MS           3U
+#define TRANSITION_TURN_MS      600U
 
 typedef struct {
     int r;
@@ -232,6 +238,23 @@ static void motor_forward(uint16_t pwm)
     motor_set_right_pwm(pwm);
 }
 
+static void motor_forward_lr(uint16_t left_pwm, uint16_t right_pwm)
+{
+    if (left_pwm > PWM_PERIOD)  left_pwm = PWM_PERIOD;
+    if (right_pwm > PWM_PERIOD) right_pwm = PWM_PERIOD;
+
+    /* Bánh trái tiến: IN1=1, IN2=0 */
+    GPIOB->BSRR = (1U << 12);
+    GPIOB->BRR  = (1U << 13);
+
+    /* Bánh phải tiến: IN3=1, IN4=0 */
+    GPIOB->BSRR = (1U << 14);
+    GPIOB->BRR  = (1U << 15);
+
+    motor_set_left_pwm(left_pwm);
+    motor_set_right_pwm(right_pwm);
+}
+
 static void motor_turn_left(uint16_t pwm)
 {
     GPIOB->BRR  = (1U << 12);
@@ -256,7 +279,7 @@ static void motor_turn_right(uint16_t pwm)
     motor_set_right_pwm(pwm);
 }
 
-/* Thêm hàm: Bánh phải tiến, bánh trái đứng yên */
+/* Bánh phải tiến, bánh trái đứng yên */
 static void motor_right_forward_left_stop(uint16_t pwm)
 {
     /* Bánh trái đứng yên (IN1=0, IN2=0) */
@@ -268,6 +291,24 @@ static void motor_right_forward_left_stop(uint16_t pwm)
 
     motor_set_left_pwm(0U);
     motor_set_right_pwm(pwm);
+}
+
+/* Lùi với tốc độ riêng từng bánh */
+static void motor_reverse_lr(uint16_t left_pwm, uint16_t right_pwm)
+{
+    if (left_pwm > PWM_PERIOD)  left_pwm = PWM_PERIOD;
+    if (right_pwm > PWM_PERIOD) right_pwm = PWM_PERIOD;
+
+    /* Bánh trái lùi: IN1=0, IN2=1 */
+    GPIOB->BRR  = (1U << 12);
+    GPIOB->BSRR = (1U << 13);
+
+    /* Bánh phải lùi: IN3=0, IN4=1 */
+    GPIOB->BRR  = (1U << 14);
+    GPIOB->BSRR = (1U << 15);
+
+    motor_set_left_pwm(left_pwm);
+    motor_set_right_pwm(right_pwm);
 }
 
 static void motor_stop(void)
@@ -379,7 +420,6 @@ static const char *color_to_str(ColorIdx idx)
     return "UNKNOWN";
 }
 
-/* Hàm kiểm tra màu có khớp với mục tiêu đang theo dõi hay không */
 static uint8_t is_target_color(ColorIdx idx, ColorIdx target)
 {
     return (idx == target) ? 1U : 0U;
@@ -392,8 +432,19 @@ int main(void)
     uint32_t last_print = 0;
     uint8_t was_moving = 0;
 
-    /* Khởi tạo biến lưu trạng thái màu mục tiêu: Bắt đầu bám màu ĐỎ */
-    ColorIdx current_target = COLOR_RED; 
+    uint8_t recovery_mode = 0U;
+    int8_t recovery_first_lost_side = 0; /* -1 = LEFT, +1 = RIGHT */
+    int8_t recovery_last_lost_side  = 0; /* -1 = LEFT, +1 = RIGHT */
+
+    uint32_t last_left_on_ms  = 0U;
+    uint32_t last_right_on_ms = 0U;
+
+    uint8_t left_go;
+    uint8_t right_go;
+    uint16_t left_reverse_pwm;
+    uint16_t right_reverse_pwm;
+
+    ColorIdx current_target = COLOR_RED;
 
     SystemCoreClockUpdate();
     SysTick_Config(SystemCoreClock / 1000U);
@@ -405,82 +456,148 @@ int main(void)
     motor_pwm_init();
     motor_stop();
 
+    last_left_on_ms  = millis();
+    last_right_on_ms = millis();
+
     uart_printf("Logic Line Following:\r\n");
     uart_printf("- Muc tieu: DO -> XANH DUONG\r\n");
-    uart_printf("- 2 BEN NHAN MAU  => FORWARD\r\n");
-    uart_printf("- TRAI KHONG, PHAI CO => RE PHAI (Banh trai tien, banh phai lui)\r\n");
-    uart_printf("- TRAI CO, PHAI KHONG => RE TRAI (Banh trai lui, banh phai tien)\r\n");
-    uart_printf("- 2 BEN KHONG NHAN MAU => STOP\r\n\r\n");
+    uart_printf("- LECH LINE => KHONG NHICH NUA, DI TIEN LECH TOC DO\r\n");
+    uart_printf("- BEN THAY LINE DI 80%%, BEN CHUA THAY DI 100%%\r\n");
+    uart_printf("- 2 BEN KHONG NHAN MAU => LUI BAT DOI XUNG DEN KHI THAY LAI LINE\r\n");
+    uart_printf("- SAU KHI LUI: 1 BEN THAY LINE => BEN THAY DI 80%%, BEN CHUA THAY DI 100%%\r\n\r\n");
 
     while (1) {
+        const char *motor_state_str = "STOP";
+
         read_sensor_raw(RIGHT_SENSOR_BUS, &right_raw);
         read_sensor_raw(LEFT_SENSOR_BUS,  &left_raw);
 
         classify_color(&right_raw, allowed_norm_right, &right_res);
         classify_color(&left_raw,  allowed_norm_left,  &left_res);
 
-        /* LOGIC CHUYỂN LINE: Nếu đang bám màu Đỏ mà 1 trong 2 cảm biến thấy màu Xanh Dương -> Chuyển sang bám Xanh Dương */
+        /* Chuyển từ line ĐỎ sang XANH DƯƠNG */
         if (current_target == COLOR_RED) {
             if (left_res.idx == COLOR_BLUE || right_res.idx == COLOR_BLUE) {
                 current_target = COLOR_BLUE;
                 uart_printf("\r\n=== DA CHUYEN MUC TIEU SANG LINE XANH DUONG ===\r\n");
                 uart_printf(">>> Thuc hien re: Banh phai tien, Banh trai dung...\r\n");
 
-                /* Thực thi yêu cầu: Bánh PHẢI quay, bánh TRÁI đứng yên trong khoảng thời gian TRANSITION_TURN_MS */
                 motor_right_forward_left_stop(PWM_FORWARD);
                 delay_ms_tick(TRANSITION_TURN_MS);
-                
-                motor_stop(); /* Tạm ngắt để ổn định trước khi bám line tiếp */
-                was_moving = 0U;
 
-                /* Bỏ qua vòng lặp bám line bên dưới, quay lên trên để cập nhật dữ liệu từ góc độ mới */
+                motor_stop();
+                was_moving = 0U;
+                recovery_mode = 0U;
+                recovery_first_lost_side = 0;
+                recovery_last_lost_side = 0;
+
                 continue;
             }
         }
 
-        /* So sánh màu đọc được với mục tiêu hiện tại thay vì so sánh với tất cả các màu */
-        uint8_t left_go = is_target_color(left_res.idx, current_target);
-        uint8_t right_go = is_target_color(right_res.idx, current_target);
-        const char *motor_state_str = "STOP";
+        left_go  = is_target_color(left_res.idx, current_target);
+        right_go = is_target_color(right_res.idx, current_target);
 
-        /* Logic bám line */
-        if (left_go && right_go) {
-            // Cả hai cảm biến đều trong line -> Đi thẳng
-            motor_forward(PWM_FORWARD);
-            was_moving = 1U;
-            motor_state_str = "FORWARD";
+        if (left_go)  last_left_on_ms  = millis();
+        if (right_go) last_right_on_ms = millis();
 
-        } else if (!left_go && right_go) {
-            // Cảm biến phải nhận, trái không nhận -> Rẽ Phải nhịp TURN_PULSE_MS
-            motor_turn_right(PWM_FORWARD);
-            delay_ms_tick(TURN_PULSE_MS);
-            motor_stop(); // Dừng lại sau nhịp rẽ để chống trượt
-            was_moving = 1U;
-            motor_state_str = "TURN_RIGHT_PULSE";
+        if (recovery_mode) {
+            if (left_go && right_go) {
+                recovery_mode = 0U;
+                recovery_first_lost_side = 0;
+                recovery_last_lost_side = 0;
 
-        } else if (left_go && !right_go) {
-            // Cảm biến trái nhận, phải không nhận -> Rẽ Trái nhịp TURN_PULSE_MS
-            motor_turn_left(PWM_FORWARD);
-            delay_ms_tick(TURN_PULSE_MS);
-            motor_stop(); // Dừng lại sau nhịp rẽ để chống trượt
-            was_moving = 1U;
-            motor_state_str = "TURN_LEFT_PULSE";
-
-        } else {
-            // Cả 2 đều trượt ra ngoài -> Phanh và Dừng
-            if (was_moving) {
-                motor_brake_pulse_then_stop(PWM_BRAKE, BRAKE_PULSE_MS);
-                was_moving = 0U;
-            } else {
-                motor_stop();
+                motor_forward(PWM_FORWARD);
+                was_moving = 1U;
+                motor_state_str = "FORWARD";
             }
-            motor_state_str = "STOP";
+            else if (left_go && !right_go) {
+                /* LEFT thấy màu, RIGHT chưa thấy:
+                   LEFT đi 80%, RIGHT đi 100% */
+                motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
+                was_moving = 1U;
+                motor_state_str = "RECOVER_FWD_L80_R100";
+            }
+            else if (!left_go && right_go) {
+                /* RIGHT thấy màu, LEFT chưa thấy:
+                   RIGHT đi 80%, LEFT đi 100% */
+                motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
+                was_moving = 1U;
+                motor_state_str = "RECOVER_FWD_L100_R80";
+            }
+            else {
+                left_reverse_pwm  = PWM_REVERSE_NORMAL;
+                right_reverse_pwm = PWM_REVERSE_NORMAL;
+
+                if ((recovery_first_lost_side == -1) && (recovery_last_lost_side == +1)) {
+                    left_reverse_pwm  = PWM_REVERSE_HALF;
+                    right_reverse_pwm = PWM_REVERSE_NORMAL;
+                    motor_state_str = "BACK_L50_R100";
+                } else if ((recovery_first_lost_side == +1) && (recovery_last_lost_side == -1)) {
+                    left_reverse_pwm  = PWM_REVERSE_NORMAL;
+                    right_reverse_pwm = PWM_REVERSE_HALF;
+                    motor_state_str = "BACK_L100_R50";
+                } else {
+                    motor_state_str = "BACK_L100_R100";
+                }
+
+                motor_reverse_lr(left_reverse_pwm, right_reverse_pwm);
+                was_moving = 1U;
+            }
+        }
+        else {
+            if (left_go && right_go) {
+                motor_forward(PWM_FORWARD);
+                was_moving = 1U;
+                motor_state_str = "FORWARD";
+            }
+            else if (!left_go && right_go) {
+                /* RIGHT thấy line, LEFT chưa thấy:
+                   RIGHT đi 80%, LEFT đi 100% */
+                motor_forward_lr(PWM_TRACK_NORMAL, PWM_TRACK_SEEN_80);
+                was_moving = 1U;
+                motor_state_str = "TRACK_FWD_L100_R80";
+            }
+            else if (left_go && !right_go) {
+                /* LEFT thấy line, RIGHT chưa thấy:
+                   LEFT đi 80%, RIGHT đi 100% */
+                motor_forward_lr(PWM_ALIGN_SEEN_80, PWM_ALIGN_NORMAL);
+                was_moving = 1U;
+                motor_state_str = "TRACK_FWD_L80_R100";
+            }
+            else {
+                /* Cả 2 đều mất line -> vào recovery lùi */
+                if (last_left_on_ms < last_right_on_ms) {
+                    recovery_first_lost_side = -1; /* LEFT mất trước */
+                    recovery_last_lost_side  = +1; /* RIGHT mất sau */
+                    left_reverse_pwm  = PWM_REVERSE_HALF;
+                    right_reverse_pwm = PWM_REVERSE_NORMAL;
+                    motor_state_str = "BACK_L50_R100";
+                } else if (last_right_on_ms < last_left_on_ms) {
+                    recovery_first_lost_side = +1; /* RIGHT mất trước */
+                    recovery_last_lost_side  = -1; /* LEFT mất sau */
+                    left_reverse_pwm  = PWM_REVERSE_NORMAL;
+                    right_reverse_pwm = PWM_REVERSE_HALF;
+                    motor_state_str = "BACK_L100_R50";
+                } else {
+                    recovery_first_lost_side = 0;
+                    recovery_last_lost_side  = 0;
+                    left_reverse_pwm  = PWM_REVERSE_NORMAL;
+                    right_reverse_pwm = PWM_REVERSE_NORMAL;
+                    motor_state_str = "BACK_L100_R100";
+                }
+
+                recovery_mode = 1U;
+                motor_reverse_lr(left_reverse_pwm, right_reverse_pwm);
+                was_moving = 1U;
+            }
         }
 
         if ((millis() - last_print) >= PRINT_INTERVAL_MS) {
             last_print = millis();
 
-            uart_printf("TARGET:%s | ", color_to_str(current_target));
+            uart_printf("TARGET:%s | ",
+                        color_to_str(current_target));
 
             uart_printf("R:%s d=%lu C=%u | ",
                         color_to_str(right_res.idx),
