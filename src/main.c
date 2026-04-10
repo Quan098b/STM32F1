@@ -26,7 +26,7 @@
 #define DEBUG_UART              1
 
 #define PWM_PERIOD              999U
-#define PWM_FORWARD             200U
+#define PWM_FORWARD             900U
 #define PWM_TURN_50_PERCENT     (PWM_FORWARD / 2U)
 
 #define PWM_BRAKE               999U
@@ -407,7 +407,7 @@ int main(void)
     motor_stop();
 
     uart_printf("Logic Line Following:\r\n");
-    uart_printf("- Muc tieu: DO -> XANH DUONG\r\n");
+    uart_printf("- Muc tieu: DO -> XANH DUONG -> XANH LA\r\n");
     uart_printf("- 2 BEN NHAN MAU  => FORWARD\r\n");
     uart_printf("- LECH PHAI        => banh trai %u, banh phai %u\r\n", PWM_FORWARD, PWM_TURN_50_PERCENT);
     uart_printf("- LECH TRAI        => banh trai %u, banh phai %u\r\n", PWM_TURN_50_PERCENT, PWM_FORWARD);
@@ -420,6 +420,9 @@ int main(void)
         classify_color(&right_raw, allowed_norm_right, &right_res);
         classify_color(&left_raw,  allowed_norm_left,  &left_res);
 
+        /* =====================================================
+           CHUYEN MUC TIEU 1: RED -> BLUE
+           ===================================================== */
         if (current_target == COLOR_RED) {
             if (left_res.idx == COLOR_BLUE || right_res.idx == COLOR_BLUE) {
                 current_target = COLOR_BLUE;
@@ -428,6 +431,21 @@ int main(void)
 
                 motor_right_forward_left_stop(PWM_FORWARD);
                 delay_ms_tick(TRANSITION_TURN_MS);
+
+                motor_stop();
+                was_moving = 0U;
+                continue;
+            }
+        }
+
+        /* =====================================================
+           CHUYEN MUC TIEU 2: BLUE -> GREEN  (DIEM 2)
+           ===================================================== */
+        if (current_target == COLOR_BLUE) {
+            if (left_res.idx == COLOR_GREEN || right_res.idx == COLOR_GREEN) {
+                current_target = COLOR_GREEN;
+                uart_printf("\r\n=== DIEM 2: DA CHUYEN MUC TIEU SANG LINE XANH LA ===\r\n");
+                uart_printf(">>> Tiep tuc bam line xanh la...\r\n");
 
                 motor_stop();
                 was_moving = 0U;
