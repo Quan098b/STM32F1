@@ -23,10 +23,10 @@
 #define RIGHT_SENSOR_BUS        I2C1
 #define LEFT_SENSOR_BUS         I2C2
 
-#define DEBUG_UART              1
+#define DEBUG_UART              0
 
 #define PWM_PERIOD              999U
-#define PWM_FORWARD             500U
+#define PWM_FORWARD             600U
 #define PWM_BRAKE               999U
 #define BRAKE_PULSE_MS          60U
 
@@ -46,7 +46,10 @@
    CÁC THÔNG SỐ ĐIỀU CHỈNH THỜI GIAN CUA (RẼ)
    ======================================================== */
 #define TURN_PULSE_MS           3U
-#define TRANSITION_TURN_MS      450U
+#define TRANSITION_TURN_MS      320U
+#define POINT1_STOP_MS          200U
+#define POINT3_STOP_MS          200U
+#define POINT3_TURN_MS          200U
 
 typedef struct {
     int r;
@@ -427,7 +430,6 @@ int main(void)
 {
     ColorData right_raw, left_raw;
     SensorResult right_res, left_res;
-    uint32_t last_print = 0;
     uint8_t was_moving = 0;
 
     uint8_t recovery_mode = 0U;
@@ -448,7 +450,6 @@ int main(void)
     SysTick_Config(SystemCoreClock / 1000U);
 
     Usart_Int(115200);
-    uart_printf("\r\nSTART COLOR -> MOTOR TEST (FAST)\r\n");
 
     Sensor_Init_All();
     motor_pwm_init();
@@ -457,16 +458,7 @@ int main(void)
     last_left_on_ms  = millis();
     last_right_on_ms = millis();
 
-    uart_printf("Logic Line Following:\r\n");
-    uart_printf("- Muc tieu: RED -> BLUE tai DIEM 1\r\n");
-    uart_printf("- Neu thay BLUE hoac GREEN thi dung lai, quay, roi bam BLUE\r\n");
-    uart_printf("- LECH LINE => DI TIEN LECH TOC DO DUNG BO PWM_ALIGN\r\n");
-    uart_printf("- 2 BEN KHONG NHAN MAU => LUI BAT DOI XUNG DEN KHI THAY LAI LINE\r\n");
-    uart_printf("- SAU KHI LUI: 1 BEN THAY LINE => TIEP TUC DUNG BO PWM_ALIGN\r\n\r\n");
-
     while (1) {
-        const char *motor_state_str = "STOP";
-
         read_sensor_raw(RIGHT_SENSOR_BUS, &right_raw);
         read_sensor_raw(LEFT_SENSOR_BUS,  &left_raw);
 
@@ -477,7 +469,7 @@ int main(void)
            DIEM 1:
            Dang bam RED, neu thay BLUE hoac GREEN
            (1 cam bien hoac ca 2 cam bien) thi:
-           - dung lai
+           - khoa banh dung 0.2s
            - quay
            - chuyen sang bam BLUE
            ===================================================== */
@@ -490,14 +482,50 @@ int main(void)
             }
 
             if (point1_detect) {
-                uart_printf("\r\n=== DIEM 1: THAY BLUE/GREEN -> DUNG, QUAY, BAM BLUE ===\r\n");
-
-                motor_brake_pulse_then_stop(PWM_BRAKE, BRAKE_PULSE_MS);
+                motor_brake(PWM_BRAKE);
+                delay_ms_tick(POINT1_STOP_MS);
+                motor_stop();
 
                 current_target = COLOR_BLUE;
 
                 motor_right_forward_left_stop(PWM_FORWARD);
                 delay_ms_tick(TRANSITION_TURN_MS);
+
+                motor_stop();
+                was_moving = 0U;
+                recovery_mode = 0U;
+                recovery_first_lost_side = 0;
+                recovery_last_lost_side = 0;
+
+                continue;
+            }
+        }
+
+        /* =====================================================
+           DIEM 3:
+           Dang bam BLUE, neu thay RED hoac GREEN
+           (1 cam bien hoac ca 2 cam bien) thi:
+           - khoa banh dung 0.2s
+           - quay 0.3s
+           - chuyen sang bam GREEN
+           ===================================================== */
+        if (current_target == COLOR_BLUE) {
+            uint8_t point3_detect = 0U;
+
+            if ((left_res.idx == COLOR_RED)   || (right_res.idx == COLOR_RED) ||
+                (left_res.idx == COLOR_GREEN) || (right_res.idx == COLOR_GREEN)) {
+                point3_detect = 1U;
+            }
+
+            if (point3_detect) {
+                motor_brake(PWM_BRAKE);
+                delay_ms_tick(POINT3_STOP_MS);
+                motor_stop();
+
+                current_target = COLOR_GREEN;
+
+                motor_right_forward_left_stop(PWM_FORWARD);
+                delay_ms_tick(POINT3_TURN_MS);
 
                 motor_stop();
                 was_moving = 0U;
@@ -523,19 +551,16 @@ int main(void)
 
                 motor_forward(PWM_FORWARD);
                 was_moving = 1U;
-                motor_state_str = "FORWARD";
             }
             else if (left_go && !right_go) {
                 /* LEFT thay line, RIGHT chua thay */
                 motor_forward_lr(PWM_ALIGN_SEEN_80, PWM_ALIGN_NORMAL);
                 was_moving = 1U;
-                motor_state_str = "RECOVER_ALIGN_L_R";
             }
             else if (!left_go && right_go) {
                 /* RIGHT thay line, LEFT chua thay */
                 motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
                 was_moving = 1U;
-                motor_state_str = "RECOVER_ALIGN_R_L";
             }
             else {
                 left_reverse_pwm  = PWM_REVERSE_NORMAL;
@@ -544,13 +569,9 @@ int main(void)
                 if ((recovery_first_lost_side == -1) && (recovery_last_lost_side == +1)) {
                     left_reverse_pwm  = PWM_REVERSE_HALF;
                     right_reverse_pwm = PWM_REVERSE_NORMAL;
-                    motor_state_str = "BACK_L50_R100";
                 } else if ((recovery_first_lost_side == +1) && (recovery_last_lost_side == -1)) {
                     left_reverse_pwm  = PWM_REVERSE_NORMAL;
                     right_reverse_pwm = PWM_REVERSE_HALF;
-                    motor_state_str = "BACK_L100_R50";
-                } else {
-                    motor_state_str = "BACK_L100_R100";
                 }
 
                 motor_reverse_lr(left_reverse_pwm, right_reverse_pwm);
@@ -561,19 +582,16 @@ int main(void)
             if (left_go && right_go) {
                 motor_forward(PWM_FORWARD);
                 was_moving = 1U;
-                motor_state_str = "FORWARD";
             }
             else if (!left_go && right_go) {
                 /* RIGHT thay line, LEFT chua thay */
                 motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
                 was_moving = 1U;
-                motor_state_str = "TRACK_ALIGN_R";
             }
             else if (left_go && !right_go) {
                 /* LEFT thay line, RIGHT chua thay */
                 motor_forward_lr(PWM_ALIGN_SEEN_80, PWM_ALIGN_NORMAL);
                 was_moving = 1U;
-                motor_state_str = "TRACK_ALIGN_L";
             }
             else {
                 /* Ca 2 deu mat line -> vao recovery lui */
@@ -582,44 +600,22 @@ int main(void)
                     recovery_last_lost_side  = +1; /* RIGHT mat sau */
                     left_reverse_pwm  = PWM_REVERSE_HALF;
                     right_reverse_pwm = PWM_REVERSE_NORMAL;
-                    motor_state_str = "BACK_L50_R100";
                 } else if (last_right_on_ms < last_left_on_ms) {
                     recovery_first_lost_side = +1; /* RIGHT mat truoc */
                     recovery_last_lost_side  = -1; /* LEFT mat sau */
                     left_reverse_pwm  = PWM_REVERSE_NORMAL;
                     right_reverse_pwm = PWM_REVERSE_HALF;
-                    motor_state_str = "BACK_L100_R50";
                 } else {
                     recovery_first_lost_side = 0;
                     recovery_last_lost_side  = 0;
                     left_reverse_pwm  = PWM_REVERSE_NORMAL;
                     right_reverse_pwm = PWM_REVERSE_NORMAL;
-                    motor_state_str = "BACK_L100_R100";
                 }
 
                 recovery_mode = 1U;
                 motor_reverse_lr(left_reverse_pwm, right_reverse_pwm);
                 was_moving = 1U;
             }
-        }
-
-        if ((millis() - last_print) >= PRINT_INTERVAL_MS) {
-            last_print = millis();
-
-            uart_printf("TARGET:%s | ",
-                        color_to_str(current_target));
-
-            uart_printf("R:%s d=%lu C=%u | ",
-                        color_to_str(right_res.idx),
-                        (unsigned long)right_res.dist,
-                        right_res.raw.c);
-
-            uart_printf("L:%s d=%lu C=%u | ",
-                        color_to_str(left_res.idx),
-                        (unsigned long)left_res.dist,
-                        left_res.raw.c);
-
-            uart_printf("MOTOR=%s\r\n", motor_state_str);
         }
 
         delay_ms_tick(SENSOR_LOOP_DELAY_MS);
