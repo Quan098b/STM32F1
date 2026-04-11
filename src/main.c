@@ -28,36 +28,40 @@
 #define PWM_PERIOD              999U
 #define PWM_FORWARD             200U
 #define PWM_BRAKE               999U
-#define BRAKE_PULSE_MS          60U
 
 #define SENSOR_LOOP_DELAY_MS    4U
 
 /* =========================================================
    NHẬN MÀU DỰA TRÊN LOG THỰC TẾ
-   - WHITE: C rất cao (đèn 12V làm trắng sáng mạnh)
-   - RED/BLUE: kênh trội rõ
-   - GREEN: G chỉ nhỉnh hơn B ít, nên nới điều kiện
-   ======================================================== */
-#define WHITE_CLEAR_MIN         15000U
+   ========================================================= */
 
-#define RED_OVER_G_DELTA        100U
-#define RED_OVER_B_DELTA        100U
+/* WHITE */
+#define WHITE_CLEAR_MIN                 15000U
 
-#define BLUE_OVER_R_DELTA       120U
-#define BLUE_OVER_G_DELTA       120U
+/* RED
+   đã nới để bắt đỏ dễ hơn
+*/
+#define RED_OVER_G_DELTA                71U
+#define RED_OVER_B_DELTA                27U
 
-#define GREEN_OVER_R_DELTA      120U
-#define GREEN_OVER_B_DELTA      10U
+/* BLUE */
+#define BLUE_OVER_R_DELTA               180U
+#define BLUE_OVER_G_DELTA               180U
 
-#define MIN_CLEAR_CHANNEL       15U
+/* GREEN thực tế của sân */
+#define GREEN_R_MAX                     220U
+#define GREEN_G_MIN                     380U
+#define GREEN_B_MIN                     380U
+#define GREEN_GB_DIFF_MAX               55U
+
+#define MIN_CLEAR_CHANNEL               15U
 
 /* =========================================================
    THỜI GIAN CUA / DỪNG Ở CÁC ĐIỂM
-   ======================================================== */
-#define TURN_PULSE_MS           3U
+   ========================================================= */
 
 /* Điểm 1: RED -> BLUE */
-#define TRANSITION_TURN_MS      370U
+#define TRANSITION_TURN_MS      420U
 #define POINT1_STOP_MS          200U
 
 /* Điểm 2: BLUE -> GREEN */
@@ -65,48 +69,45 @@
 #define POINT2_TURN_MS          55U
 
 /* Điểm 3: GREEN -> BLUE */
-#define POINT3_STOP_MS          900U
-#define POINT3_TURN_MS          180U
+#define POINT3_STOP_MS          300U
+#define POINT3_TURN_MS          240U
 
 /* Điểm 4: BLUE -> RED */
-#define POINT4_STOP_MS          500U
-#define POINT4_TURN_MS          300U
+#define POINT4_STOP_MS                 500U
 
-/* Chống nhiễu đoạn bám BLUE trước khi cho phép nhận điểm 2 */
+/* NOTE:
+   Sau khi tới điểm 4:
+   1) phanh + dừng
+   2) giật lùi 0.3s
+   3) mới quay trái
+   4) sau đó tiến từng nhịp để tìm line đỏ
+*/
+#define POINT4_REVERSE_MS              300U
+#define POINT4_REVERSE_PWM             180U
+#define POINT4_TURN_MS                 400U
+#define POINT4_SEARCH_RED_PWM          130U
+#define POINT4_SEARCH_RED_TIMEOUT_MS   1200U
+#define POINT4_SEARCH_RED_STEP_MS      8U
+
+/* Chống nhiễu */
 #define POINT2_GUARD_MS         2000U
 #define POINT2_CONFIRM_COUNT    10U
 
-/* Chống nhiễu đoạn bám GREEN trước khi cho phép nhận điểm 3 */
 #define POINT3_GUARD_MS         800U
 #define POINT3_CONFIRM_COUNT    6U
 
-/* Chống nhiễu đoạn bám BLUE trước khi cho phép nhận điểm 4 */
 #define POINT4_GUARD_MS         600U
-#define POINT4_CONFIRM_COUNT    6U
 
 /* =========================================================
    PROFILE TỐC ĐỘ THEO TỪNG ĐOẠN
-   =========================================================
 
    route_stage:
    0 = ĐIỂM BẮT ĐẦU  -> ĐIỂM 1  (bám RED)
    1 = ĐIỂM 1        -> ĐIỂM 2  (bám BLUE)
    2 = ĐIỂM 2        -> ĐIỂM 3  (bám GREEN)
    3 = ĐIỂM 3        -> ĐIỂM 4  (bám BLUE)
-
-   Ý nghĩa:
-   - REVERSE_NORMAL / HALF: tốc độ lùi khi mất cả 2 line
-   - ALIGN_NORMAL / SEEN_80: tốc độ tiến khi chỉ còn 1 cảm biến thấy line
-
-   NOTE:
-   - ĐOẠN CHUNG dùng cho:
-       + ĐIỂM BẮT ĐẦU -> ĐIỂM 1
-       + SAU ĐIỂM 4 BÁM LẠI RED
-   - ĐOẠN RIÊNG 1 dùng cho:
-       + ĐIỂM 1 -> ĐIỂM 2
-   - ĐOẠN RIÊNG 2 dùng cho:
-       + ĐIỂM 2 -> ĐIỂM 3
-   ======================================================== */
+   4 = SAU ĐIỂM 4                (chỉ bám RED, không quay lại điểm 1)
+   ========================================================= */
 
 /* =========================
    ĐOẠN CHUNG:
@@ -429,6 +430,11 @@ static int16_t min3_i16(int16_t a, int16_t b, int16_t c)
     return m;
 }
 
+static int16_t abs_i16(int16_t x)
+{
+    return (x < 0) ? (int16_t)(-x) : x;
+}
+
 static void classify_color(const ColorData *raw, SensorResult *out)
 {
     int16_t maxv, minv;
@@ -445,12 +451,14 @@ static void classify_color(const ColorData *raw, SensorResult *out)
     out->match = 0U;
     out->idx = COLOR_UNKNOWN;
 
+    /* WHITE ưu tiên trước */
     if (raw->c >= WHITE_CLEAR_MIN) {
         out->match = 1U;
         out->idx = COLOR_WHITE;
         return;
     }
 
+    /* RED */
     if ((out->rn > out->gn) && (out->rn > out->bn) &&
         ((out->rn - out->gn) >= RED_OVER_G_DELTA) &&
         ((out->rn - out->bn) >= RED_OVER_B_DELTA) &&
@@ -461,16 +469,17 @@ static void classify_color(const ColorData *raw, SensorResult *out)
         return;
     }
 
-    if ((out->gn > out->rn) && (out->gn > out->bn) &&
-        ((out->gn - out->rn) >= GREEN_OVER_R_DELTA) &&
-        ((out->gn - out->bn) >= GREEN_OVER_B_DELTA) &&
-        (out->rn >= MIN_CLEAR_CHANNEL) &&
-        (out->bn >= MIN_CLEAR_CHANNEL)) {
+    /* GREEN thực tế của sân */
+    if ((out->rn <= GREEN_R_MAX) &&
+        (out->gn >= GREEN_G_MIN) &&
+        (out->bn >= GREEN_B_MIN) &&
+        (abs_i16((int16_t)(out->gn - out->bn)) <= GREEN_GB_DIFF_MAX)) {
         out->match = 1U;
         out->idx = COLOR_GREEN;
         return;
     }
 
+    /* BLUE */
     if ((out->bn > out->rn) && (out->bn > out->gn) &&
         ((out->bn - out->rn) >= BLUE_OVER_R_DELTA) &&
         ((out->bn - out->gn) >= BLUE_OVER_G_DELTA) &&
@@ -538,10 +547,11 @@ int main(void)
     ColorIdx current_target = COLOR_RED;
 
     /* route_stage:
-       0 = START -> POINT1 / SAU POINT4 -> RED
+       0 = START -> POINT1
        1 = POINT1 -> POINT2
        2 = POINT2 -> POINT3
        3 = POINT3 -> POINT4
+       4 = SAU ĐIỂM 4, CHỈ BÁM RED
     */
     uint8_t route_stage = 0U;
 
@@ -552,7 +562,6 @@ int main(void)
     uint8_t point3_seen_count = 0U;
 
     uint32_t point4_blue_start_ms = 0U;
-    uint8_t point4_seen_count = 0U;
 
     SystemCoreClockUpdate();
     SysTick_Config(SystemCoreClock / 1000U);
@@ -614,7 +623,6 @@ int main(void)
             uint8_t point2_detect = 0U;
 
             if ((millis() - blue_start_ms) >= POINT2_GUARD_MS) {
-
                 if (left_res.idx == COLOR_GREEN) {
                     marker_left = 1U;
                 }
@@ -674,7 +682,6 @@ int main(void)
             uint8_t point3_detect = 0U;
 
             if ((millis() - green_start_ms) >= POINT3_GUARD_MS) {
-
                 if (left_res.idx == COLOR_BLUE) {
                     marker_left = 1U;
                 }
@@ -712,7 +719,6 @@ int main(void)
                 current_target = COLOR_BLUE;
                 route_stage = 3U;
                 point4_blue_start_ms = millis();
-                point4_seen_count = 0U;
 
                 motor_turn_left(PWM_FORWARD);
                 delay_ms_tick(POINT3_TURN_MS);
@@ -727,61 +733,78 @@ int main(void)
 
         /* =========================
            ĐIỂM 4: BLUE -> RED
-           Điều kiện: có RED và GREEN
-           Sau đó quay 0.5s rồi bám RED
-           Dùng lại tốc độ đoạn START -> POINT1
+           NOTE:
+           - tới điểm 4 thì dừng
+           - giật lùi 0.3s
+           - quay trái
+           - sau đó mới đi tìm lại line đỏ
            ========================= */
         if ((route_stage == 3U) && (current_target == COLOR_BLUE)) {
-            uint8_t marker_left = 0U;
-            uint8_t marker_right = 0U;
             uint8_t point4_detect = 0U;
 
             if ((millis() - point4_blue_start_ms) >= POINT4_GUARD_MS) {
-
-                if ((left_res.idx == COLOR_RED) || (left_res.idx == COLOR_GREEN)) {
-                    marker_left = 1U;
-                }
-
-                if ((right_res.idx == COLOR_RED) || (right_res.idx == COLOR_GREEN)) {
-                    marker_right = 1U;
-                }
-
-                if (marker_left && marker_right) {
+                if ((left_res.idx  == COLOR_RED)   ||
+                    (left_res.idx  == COLOR_GREEN) ||
+                    (right_res.idx == COLOR_RED)   ||
+                    (right_res.idx == COLOR_GREEN)) {
                     point4_detect = 1U;
-                    point4_seen_count = 0U;
-                } else {
-                    if (marker_left || marker_right) {
-                        if (point4_seen_count < 255U) {
-                            point4_seen_count++;
-                        }
-                    } else {
-                        point4_seen_count = 0U;
-                    }
-
-                    if (point4_seen_count >= POINT4_CONFIRM_COUNT) {
-                        point4_detect = 1U;
-                        point4_seen_count = 0U;
-                    }
                 }
-            } else {
-                point4_seen_count = 0U;
             }
 
             if (point4_detect) {
+                uint32_t search_start;
+
                 motor_brake(PWM_BRAKE);
                 delay_ms_tick(POINT4_STOP_MS);
                 motor_stop();
 
-                current_target = COLOR_RED;
-                route_stage = 0U; /* dùng lại profile tốc độ của START -> POINT1 */
-
-                motor_turn_left(PWM_FORWARD);
-                delay_ms_tick(POINT4_TURN_MS);
-
+                /* ========= NOTE CHỖ ĐÃ SỬA =========
+                   Giật lùi lại 0.3 giây trước khi quay
+                   Bạn chỉnh ở 2 dòng:
+                   - POINT4_REVERSE_MS
+                   - POINT4_REVERSE_PWM
+                   ================================== */
+                motor_reverse_lr(POINT4_REVERSE_PWM, POINT4_REVERSE_PWM);
+                delay_ms_tick(POINT4_REVERSE_MS);
                 motor_stop();
+
+                current_target = COLOR_RED;
+                route_stage = 4U;
+
                 recovery_mode = 0U;
                 recovery_first_lost_side = 0;
                 recovery_last_lost_side = 0;
+
+                motor_turn_left(PWM_FORWARD);
+                delay_ms_tick(POINT4_TURN_MS);
+                motor_stop();
+
+                search_start = millis();
+                while ((millis() - search_start) < POINT4_SEARCH_RED_TIMEOUT_MS) {
+                    read_sensor_raw(RIGHT_SENSOR_BUS, &right_raw);
+                    read_sensor_raw(LEFT_SENSOR_BUS,  &left_raw);
+
+                    classify_color(&right_raw, &right_res);
+                    classify_color(&left_raw,  &left_res);
+
+                    if ((left_res.idx == COLOR_RED) || (right_res.idx == COLOR_RED)) {
+                        if (left_res.idx == COLOR_RED) {
+                            last_left_on_ms = millis();
+                        }
+                        if (right_res.idx == COLOR_RED) {
+                            last_right_on_ms = millis();
+                        }
+                        motor_stop();
+                        break;
+                    }
+
+                    motor_forward(POINT4_SEARCH_RED_PWM);
+                    delay_ms_tick(POINT4_SEARCH_RED_STEP_MS);
+                    motor_stop();
+                    delay_ms_tick(2U);
+                }
+
+                motor_stop();
                 continue;
             }
         }
