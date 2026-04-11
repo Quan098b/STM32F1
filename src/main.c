@@ -46,10 +46,14 @@
    CÁC THÔNG SỐ ĐIỀU CHỈNH THỜI GIAN CUA (RẼ)
    ======================================================== */
 #define TURN_PULSE_MS           3U
-#define TRANSITION_TURN_MS      320U
+#define TRANSITION_TURN_MS      180U
 #define POINT1_STOP_MS          200U
 #define POINT3_STOP_MS          200U
 #define POINT3_TURN_MS          200U
+
+/* Chống nhiễu đoạn bám BLUE trước khi cho phép nhận điểm tiếp theo */
+#define POINT2_GUARD_MS         3500U
+#define POINT2_CONFIRM_COUNT    10U
 
 typedef struct {
     int r;
@@ -258,6 +262,7 @@ static void motor_forward_lr(uint16_t left_pwm, uint16_t right_pwm)
 
 static void motor_turn_left(uint16_t pwm)
 {
+    /* Bánh trái lùi, bánh phải tiến */
     GPIOB->BRR  = (1U << 12);
     GPIOB->BSRR = (1U << 13);
 
@@ -270,6 +275,7 @@ static void motor_turn_left(uint16_t pwm)
 
 static void motor_turn_right(uint16_t pwm)
 {
+    /* Bánh trái tiến, bánh phải lùi */
     GPIOB->BSRR = (1U << 12);
     GPIOB->BRR  = (1U << 13);
 
@@ -446,6 +452,10 @@ int main(void)
 
     ColorIdx current_target = COLOR_RED;
 
+    /* Chống nhiễu đoạn bám BLUE */
+    uint32_t blue_start_ms = 0U;
+    uint8_t point2_seen_count = 0U;
+
     SystemCoreClockUpdate();
     SysTick_Config(SystemCoreClock / 1000U);
 
@@ -487,8 +497,9 @@ int main(void)
                 motor_stop();
 
                 current_target = COLOR_BLUE;
+                blue_start_ms = millis();
+                point2_seen_count = 0U;
 
-                /* quay tai cho: 1 banh lui, 1 banh tien */
                 motor_turn_left(PWM_FORWARD);
                 delay_ms_tick(TRANSITION_TURN_MS);
 
@@ -507,15 +518,47 @@ int main(void)
            Dang bam BLUE, neu thay RED hoac GREEN
            (1 cam bien hoac ca 2 cam bien) thi:
            - khoa banh dung 0.2s
-           - quay 0.3s bang 1 banh tien, 1 banh lui
+           - quay bang 1 banh tien, 1 banh lui
            - chuyen sang bam GREEN
+
+           Chong nhieu:
+           - sau diem 1 phai cho 2s moi duoc nhan xanh la/do
+           - sau do neu chi thay 1 ben thi phai lap lai nhieu lan
            ===================================================== */
         if (current_target == COLOR_BLUE) {
+            uint8_t marker_left = 0U;
+            uint8_t marker_right = 0U;
             uint8_t point3_detect = 0U;
 
-            if ((left_res.idx == COLOR_RED)   || (right_res.idx == COLOR_RED) ||
-                (left_res.idx == COLOR_GREEN) || (right_res.idx == COLOR_GREEN)) {
-                point3_detect = 1U;
+            if ((millis() - blue_start_ms) >= POINT2_GUARD_MS) {
+
+                if ((left_res.idx == COLOR_RED) || (left_res.idx == COLOR_GREEN)) {
+                    marker_left = 1U;
+                }
+
+                if ((right_res.idx == COLOR_RED) || (right_res.idx == COLOR_GREEN)) {
+                    marker_right = 1U;
+                }
+
+                if (marker_left && marker_right) {
+                    point3_detect = 1U;
+                    point2_seen_count = 0U;
+                } else {
+                    if (marker_left || marker_right) {
+                        if (point2_seen_count < 255U) {
+                            point2_seen_count++;
+                        }
+                    } else {
+                        point2_seen_count = 0U;
+                    }
+
+                    if (point2_seen_count >= POINT2_CONFIRM_COUNT) {
+                        point3_detect = 1U;
+                        point2_seen_count = 0U;
+                    }
+                }
+            } else {
+                point2_seen_count = 0U;
             }
 
             if (point3_detect) {
@@ -525,7 +568,6 @@ int main(void)
 
                 current_target = COLOR_GREEN;
 
-                /* quay tai cho: 1 banh lui, 1 banh tien */
                 motor_turn_left(PWM_FORWARD);
                 delay_ms_tick(POINT3_TURN_MS);
 
@@ -555,12 +597,12 @@ int main(void)
                 was_moving = 1U;
             }
             else if (left_go && !right_go) {
-                /* LEFT thay line, RIGHT chua thay */
+                /* LEFT thấy line, RIGHT chưa thấy */
                 motor_forward_lr(PWM_ALIGN_SEEN_80, PWM_ALIGN_NORMAL);
                 was_moving = 1U;
             }
             else if (!left_go && right_go) {
-                /* RIGHT thay line, LEFT chua thay */
+                /* RIGHT thấy line, LEFT chưa thấy */
                 motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
                 was_moving = 1U;
             }
@@ -586,25 +628,25 @@ int main(void)
                 was_moving = 1U;
             }
             else if (!left_go && right_go) {
-                /* RIGHT thay line, LEFT chua thay */
+                /* RIGHT thấy line, LEFT chưa thấy */
                 motor_forward_lr(PWM_ALIGN_NORMAL, PWM_ALIGN_SEEN_80);
                 was_moving = 1U;
             }
             else if (left_go && !right_go) {
-                /* LEFT thay line, RIGHT chua thay */
+                /* LEFT thấy line, RIGHT chưa thấy */
                 motor_forward_lr(PWM_ALIGN_SEEN_80, PWM_ALIGN_NORMAL);
                 was_moving = 1U;
             }
             else {
-                /* Ca 2 deu mat line -> vao recovery lui */
+                /* Cả 2 đều mất line -> vào recovery lùi */
                 if (last_left_on_ms < last_right_on_ms) {
-                    recovery_first_lost_side = -1; /* LEFT mat truoc */
-                    recovery_last_lost_side  = +1; /* RIGHT mat sau */
+                    recovery_first_lost_side = -1; /* LEFT mất trước */
+                    recovery_last_lost_side  = +1; /* RIGHT mất sau */
                     left_reverse_pwm  = PWM_REVERSE_HALF;
                     right_reverse_pwm = PWM_REVERSE_NORMAL;
                 } else if (last_right_on_ms < last_left_on_ms) {
-                    recovery_first_lost_side = +1; /* RIGHT mat truoc */
-                    recovery_last_lost_side  = -1; /* LEFT mat sau */
+                    recovery_first_lost_side = +1; /* RIGHT mất trước */
+                    recovery_last_lost_side  = -1; /* LEFT mất sau */
                     left_reverse_pwm  = PWM_REVERSE_NORMAL;
                     right_reverse_pwm = PWM_REVERSE_HALF;
                 } else {
