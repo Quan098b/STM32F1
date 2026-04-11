@@ -28,14 +28,15 @@
 #define PWM_PERIOD              999U
 #define PWM_FORWARD             200U
 #define PWM_BRAKE               999U
+#define BRAKE_PULSE_MS          60U
 
 #define SENSOR_LOOP_DELAY_MS    4U
 
-/* sau khi quay xong thì tiến thêm 1 chút để bắt lại line */
-#define POST_TURN_FORWARD_MS    120U
-
 /* =========================================================
-   NHẬN MÀU
+   NHẬN MÀU DỰA TRÊN LOG THỰC TẾ
+   - WHITE: C rất cao (đèn 12V làm trắng sáng mạnh)
+   - RED/BLUE: kênh trội rõ
+   - GREEN: G chỉ nhỉnh hơn B ít, nên nới điều kiện
    ======================================================== */
 #define WHITE_CLEAR_MIN         15000U
 
@@ -51,42 +52,89 @@
 #define MIN_CLEAR_CHANNEL       15U
 
 /* =========================================================
-   THỜI GIAN DỪNG / QUAY
+   THỜI GIAN CUA / DỪNG Ở CÁC ĐIỂM
    ======================================================== */
+#define TURN_PULSE_MS           3U
+
+/* Điểm 1: RED -> BLUE */
+#define TRANSITION_TURN_MS      370U
 #define POINT1_STOP_MS          200U
-#define POINT1_TURN_MS          330U
 
-#define POINT2_STOP_MS          200U
-#define POINT2_TURN_MS          180U
+/* Điểm 2: BLUE -> GREEN */
+#define POINT2_STOP_MS          300U
+#define POINT2_TURN_MS          55U
 
-#define POINT3_STOP_MS          250U
-#define POINT3_TURN_MS          200U
+/* Điểm 3: GREEN -> BLUE */
+#define POINT3_STOP_MS          900U
+#define POINT3_TURN_MS          180U
 
-#define POINT1_CONFIRM_COUNT    8U
-#define POINT2_GUARD_MS         1000U
+/* Điểm 4: BLUE -> RED */
+#define POINT4_STOP_MS          500U
+#define POINT4_TURN_MS          300U
+
+/* Chống nhiễu đoạn bám BLUE trước khi cho phép nhận điểm 2 */
+#define POINT2_GUARD_MS         2000U
 #define POINT2_CONFIRM_COUNT    10U
-#define POINT3_GUARD_MS         1000U
-#define POINT3_CONFIRM_COUNT    10U
+
+/* Chống nhiễu đoạn bám GREEN trước khi cho phép nhận điểm 3 */
+#define POINT3_GUARD_MS         800U
+#define POINT3_CONFIRM_COUNT    6U
+
+/* Chống nhiễu đoạn bám BLUE trước khi cho phép nhận điểm 4 */
+#define POINT4_GUARD_MS         600U
+#define POINT4_CONFIRM_COUNT    6U
 
 /* =========================================================
-   TỐC ĐỘ CHUNG
+   PROFILE TỐC ĐỘ THEO TỪNG ĐOẠN
+   =========================================================
+
+   route_stage:
+   0 = ĐIỂM BẮT ĐẦU  -> ĐIỂM 1  (bám RED)
+   1 = ĐIỂM 1        -> ĐIỂM 2  (bám BLUE)
+   2 = ĐIỂM 2        -> ĐIỂM 3  (bám GREEN)
+   3 = ĐIỂM 3        -> ĐIỂM 4  (bám BLUE)
+
+   Ý nghĩa:
+   - REVERSE_NORMAL / HALF: tốc độ lùi khi mất cả 2 line
+   - ALIGN_NORMAL / SEEN_80: tốc độ tiến khi chỉ còn 1 cảm biến thấy line
+
+   NOTE:
+   - ĐOẠN CHUNG dùng cho:
+       + ĐIỂM BẮT ĐẦU -> ĐIỂM 1
+       + SAU ĐIỂM 4 BÁM LẠI RED
+   - ĐOẠN RIÊNG 1 dùng cho:
+       + ĐIỂM 1 -> ĐIỂM 2
+   - ĐOẠN RIÊNG 2 dùng cho:
+       + ĐIỂM 2 -> ĐIỂM 3
    ======================================================== */
-#define PWM_ALIGN_COMMON_NORMAL        250U
-#define PWM_ALIGN_COMMON_SEEN_80       230U
 
-/* mất line thì không lùi nữa, tiến chếch theo phía cuối cùng thấy line */
-#define PWM_SEARCH_COMMON_FAST         250U
-#define PWM_SEARCH_COMMON_SLOW         220U
+/* =========================
+   ĐOẠN CHUNG:
+   START -> POINT1
+   SAU POINT4 -> RED
+   ========================= */
+#define PWM_REVERSE_COMMON_NORMAL      210U
+#define PWM_REVERSE_COMMON_HALF        200U
+#define PWM_ALIGN_COMMON_NORMAL        440U
+#define PWM_ALIGN_COMMON_SEEN_80       380U
 
-/* =========================================================
-   TỐC ĐỘ RIÊNG CHO ĐOẠN XANH LÁ
-   SAU ĐIỂM 2 -> ĐIỂM 3
-   ======================================================== */
-#define PWM_ALIGN_GREEN_NORMAL         420U
-#define PWM_ALIGN_GREEN_SEEN_80        360U
+/* =========================
+   ĐOẠN RIÊNG 1:
+   POINT1 -> POINT2
+   ========================= */
+#define PWM_REVERSE_P1_P2_NORMAL       220U
+#define PWM_REVERSE_P1_P2_HALF         150U
+#define PWM_ALIGN_P1_P2_NORMAL         180U
+#define PWM_ALIGN_P1_P2_SEEN_80        150U
 
-#define PWM_SEARCH_GREEN_FAST          420U
-#define PWM_SEARCH_GREEN_SLOW          200U
+/* =========================
+   ĐOẠN RIÊNG 2:
+   POINT2 -> POINT3
+   ========================= */
+#define PWM_REVERSE_P2_P3_NORMAL       200U
+#define PWM_REVERSE_P2_P3_HALF         150U
+#define PWM_ALIGN_P2_P3_NORMAL         200U
+#define PWM_ALIGN_P2_P3_SEEN_80        180U
 
 typedef struct {
     int r;
@@ -275,6 +323,18 @@ static void motor_forward_lr(uint16_t left_pwm, uint16_t right_pwm)
     motor_set_right_pwm(right_pwm);
 }
 
+static void motor_turn_left(uint16_t pwm)
+{
+    GPIOB->BRR  = (1U << 12);
+    GPIOB->BSRR = (1U << 13);
+
+    GPIOB->BSRR = (1U << 14);
+    GPIOB->BRR  = (1U << 15);
+
+    motor_set_left_pwm(pwm);
+    motor_set_right_pwm(pwm);
+}
+
 static void motor_turn_right(uint16_t pwm)
 {
     GPIOB->BSRR = (1U << 12);
@@ -285,6 +345,21 @@ static void motor_turn_right(uint16_t pwm)
 
     motor_set_left_pwm(pwm);
     motor_set_right_pwm(pwm);
+}
+
+static void motor_reverse_lr(uint16_t left_pwm, uint16_t right_pwm)
+{
+    if (left_pwm > PWM_PERIOD)  left_pwm = PWM_PERIOD;
+    if (right_pwm > PWM_PERIOD) right_pwm = PWM_PERIOD;
+
+    GPIOB->BRR  = (1U << 12);
+    GPIOB->BSRR = (1U << 13);
+
+    GPIOB->BRR  = (1U << 14);
+    GPIOB->BSRR = (1U << 15);
+
+    motor_set_left_pwm(left_pwm);
+    motor_set_right_pwm(right_pwm);
 }
 
 static void motor_stop(void)
@@ -407,6 +482,32 @@ static void classify_color(const ColorData *raw, SensorResult *out)
     }
 }
 
+static void get_motion_profile(uint8_t route_stage,
+                               uint16_t *reverse_normal,
+                               uint16_t *reverse_half,
+                               uint16_t *align_normal,
+                               uint16_t *align_seen80)
+{
+    if (route_stage == 1U) {
+        *reverse_normal = PWM_REVERSE_P1_P2_NORMAL;
+        *reverse_half   = PWM_REVERSE_P1_P2_HALF;
+        *align_normal   = PWM_ALIGN_P1_P2_NORMAL;
+        *align_seen80   = PWM_ALIGN_P1_P2_SEEN_80;
+    }
+    else if (route_stage == 2U) {
+        *reverse_normal = PWM_REVERSE_P2_P3_NORMAL;
+        *reverse_half   = PWM_REVERSE_P2_P3_HALF;
+        *align_normal   = PWM_ALIGN_P2_P3_NORMAL;
+        *align_seen80   = PWM_ALIGN_P2_P3_SEEN_80;
+    }
+    else {
+        *reverse_normal = PWM_REVERSE_COMMON_NORMAL;
+        *reverse_half   = PWM_REVERSE_COMMON_HALF;
+        *align_normal   = PWM_ALIGN_COMMON_NORMAL;
+        *align_seen80   = PWM_ALIGN_COMMON_SEEN_80;
+    }
+}
+
 static uint8_t is_target_color(ColorIdx idx, ColorIdx target)
 {
     return (idx == target) ? 1U : 0U;
@@ -417,32 +518,41 @@ int main(void)
     ColorData right_raw, left_raw;
     SensorResult right_res, left_res;
 
-    int8_t last_seen_side = 0; /* -1 = LEFT, +1 = RIGHT, 0 = unknown */
+    uint8_t recovery_mode = 0U;
+    int8_t recovery_first_lost_side = 0;
+    int8_t recovery_last_lost_side  = 0;
 
     uint32_t last_left_on_ms  = 0U;
     uint32_t last_right_on_ms = 0U;
 
     uint8_t left_go;
     uint8_t right_go;
+    uint16_t left_reverse_pwm;
+    uint16_t right_reverse_pwm;
+
+    uint16_t reverse_normal_cur;
+    uint16_t reverse_half_cur;
+    uint16_t align_normal_cur;
+    uint16_t align_seen80_cur;
 
     ColorIdx current_target = COLOR_RED;
 
-    /* 0 = START -> POINT1 (RED)
-       1 = POINT1 -> POINT2 (BLUE)
-       2 = POINT2 -> POINT3 (GREEN)
-       3 = SAU POINT3 (BLUE) */
+    /* route_stage:
+       0 = START -> POINT1 / SAU POINT4 -> RED
+       1 = POINT1 -> POINT2
+       2 = POINT2 -> POINT3
+       3 = POINT3 -> POINT4
+    */
     uint8_t route_stage = 0U;
 
     uint32_t blue_start_ms = 0U;
-    uint32_t green_start_ms = 0U;
-    uint8_t point1_seen_count = 0U;
     uint8_t point2_seen_count = 0U;
+
+    uint32_t green_start_ms = 0U;
     uint8_t point3_seen_count = 0U;
 
-    uint16_t search_fast_cur;
-    uint16_t search_slow_cur;
-    uint16_t align_normal_cur;
-    uint16_t align_seen80_cur;
+    uint32_t point4_blue_start_ms = 0U;
+    uint8_t point4_seen_count = 0U;
 
     SystemCoreClockUpdate();
     SysTick_Config(SystemCoreClock / 1000U);
@@ -463,29 +573,15 @@ int main(void)
         classify_color(&right_raw, &right_res);
         classify_color(&left_raw,  &left_res);
 
-        /* ĐIỂM 1: RED -> BLUE */
+        /* =========================
+           ĐIỂM 1: RED -> BLUE
+           ========================= */
         if ((route_stage == 0U) && (current_target == COLOR_RED)) {
-            uint8_t marker_left = 0U;
-            uint8_t marker_right = 0U;
             uint8_t point1_detect = 0U;
 
-            if (left_res.idx == COLOR_BLUE) marker_left = 1U;
-            if (right_res.idx == COLOR_BLUE) marker_right = 1U;
-
-            if (marker_left && marker_right) {
+            if ((left_res.idx == COLOR_BLUE)  || (right_res.idx == COLOR_BLUE) ||
+                (left_res.idx == COLOR_GREEN) || (right_res.idx == COLOR_GREEN)) {
                 point1_detect = 1U;
-                point1_seen_count = 0U;
-            } else {
-                if (marker_left || marker_right) {
-                    if (point1_seen_count < 255U) point1_seen_count++;
-                } else {
-                    point1_seen_count = 0U;
-                }
-
-                if (point1_seen_count >= POINT1_CONFIRM_COUNT) {
-                    point1_detect = 1U;
-                    point1_seen_count = 0U;
-                }
             }
 
             if (point1_detect) {
@@ -498,19 +594,20 @@ int main(void)
                 blue_start_ms = millis();
                 point2_seen_count = 0U;
 
-                motor_turn_right(PWM_FORWARD);
-                delay_ms_tick(POINT1_TURN_MS);
-
-                motor_forward(PWM_FORWARD);
-                delay_ms_tick(POST_TURN_FORWARD_MS);
+                motor_turn_left(PWM_FORWARD);
+                delay_ms_tick(TRANSITION_TURN_MS);
 
                 motor_stop();
-                last_seen_side = 0;
+                recovery_mode = 0U;
+                recovery_first_lost_side = 0;
+                recovery_last_lost_side = 0;
                 continue;
             }
         }
 
-        /* ĐIỂM 2: BLUE -> GREEN */
+        /* =========================
+           ĐIỂM 2: BLUE -> GREEN
+           ========================= */
         if ((route_stage == 1U) && (current_target == COLOR_BLUE)) {
             uint8_t marker_left = 0U;
             uint8_t marker_right = 0U;
@@ -518,15 +615,22 @@ int main(void)
 
             if ((millis() - blue_start_ms) >= POINT2_GUARD_MS) {
 
-                if (left_res.idx == COLOR_GREEN) marker_left = 1U;
-                if (right_res.idx == COLOR_GREEN) marker_right = 1U;
+                if (left_res.idx == COLOR_GREEN) {
+                    marker_left = 1U;
+                }
+
+                if (right_res.idx == COLOR_GREEN) {
+                    marker_right = 1U;
+                }
 
                 if (marker_left && marker_right) {
                     point2_detect = 1U;
                     point2_seen_count = 0U;
                 } else {
                     if (marker_left || marker_right) {
-                        if (point2_seen_count < 255U) point2_seen_count++;
+                        if (point2_seen_count < 255U) {
+                            point2_seen_count++;
+                        }
                     } else {
                         point2_seen_count = 0U;
                     }
@@ -550,19 +654,20 @@ int main(void)
                 green_start_ms = millis();
                 point3_seen_count = 0U;
 
-                motor_turn_right(PWM_FORWARD);
+                motor_turn_left(PWM_FORWARD);
                 delay_ms_tick(POINT2_TURN_MS);
 
-                motor_forward(PWM_FORWARD);
-                delay_ms_tick(POST_TURN_FORWARD_MS);
-
                 motor_stop();
-                last_seen_side = 0;
+                recovery_mode = 0U;
+                recovery_first_lost_side = 0;
+                recovery_last_lost_side = 0;
                 continue;
             }
         }
 
-        /* ĐIỂM 3: GREEN -> BLUE */
+        /* =========================
+           ĐIỂM 3: GREEN -> BLUE
+           ========================= */
         if ((route_stage == 2U) && (current_target == COLOR_GREEN)) {
             uint8_t marker_left = 0U;
             uint8_t marker_right = 0U;
@@ -570,15 +675,22 @@ int main(void)
 
             if ((millis() - green_start_ms) >= POINT3_GUARD_MS) {
 
-                if (left_res.idx == COLOR_BLUE) marker_left = 1U;
-                if (right_res.idx == COLOR_BLUE) marker_right = 1U;
+                if (left_res.idx == COLOR_BLUE) {
+                    marker_left = 1U;
+                }
+
+                if (right_res.idx == COLOR_BLUE) {
+                    marker_right = 1U;
+                }
 
                 if (marker_left && marker_right) {
                     point3_detect = 1U;
                     point3_seen_count = 0U;
                 } else {
                     if (marker_left || marker_right) {
-                        if (point3_seen_count < 255U) point3_seen_count++;
+                        if (point3_seen_count < 255U) {
+                            point3_seen_count++;
+                        }
                     } else {
                         point3_seen_count = 0U;
                     }
@@ -599,15 +711,77 @@ int main(void)
 
                 current_target = COLOR_BLUE;
                 route_stage = 3U;
+                point4_blue_start_ms = millis();
+                point4_seen_count = 0U;
 
-                motor_turn_right(PWM_FORWARD);
+                motor_turn_left(PWM_FORWARD);
                 delay_ms_tick(POINT3_TURN_MS);
 
-                motor_forward(PWM_FORWARD);
-                delay_ms_tick(POST_TURN_FORWARD_MS);
+                motor_stop();
+                recovery_mode = 0U;
+                recovery_first_lost_side = 0;
+                recovery_last_lost_side = 0;
+                continue;
+            }
+        }
+
+        /* =========================
+           ĐIỂM 4: BLUE -> RED
+           Điều kiện: có RED và GREEN
+           Sau đó quay 0.5s rồi bám RED
+           Dùng lại tốc độ đoạn START -> POINT1
+           ========================= */
+        if ((route_stage == 3U) && (current_target == COLOR_BLUE)) {
+            uint8_t marker_left = 0U;
+            uint8_t marker_right = 0U;
+            uint8_t point4_detect = 0U;
+
+            if ((millis() - point4_blue_start_ms) >= POINT4_GUARD_MS) {
+
+                if ((left_res.idx == COLOR_RED) || (left_res.idx == COLOR_GREEN)) {
+                    marker_left = 1U;
+                }
+
+                if ((right_res.idx == COLOR_RED) || (right_res.idx == COLOR_GREEN)) {
+                    marker_right = 1U;
+                }
+
+                if (marker_left && marker_right) {
+                    point4_detect = 1U;
+                    point4_seen_count = 0U;
+                } else {
+                    if (marker_left || marker_right) {
+                        if (point4_seen_count < 255U) {
+                            point4_seen_count++;
+                        }
+                    } else {
+                        point4_seen_count = 0U;
+                    }
+
+                    if (point4_seen_count >= POINT4_CONFIRM_COUNT) {
+                        point4_detect = 1U;
+                        point4_seen_count = 0U;
+                    }
+                }
+            } else {
+                point4_seen_count = 0U;
+            }
+
+            if (point4_detect) {
+                motor_brake(PWM_BRAKE);
+                delay_ms_tick(POINT4_STOP_MS);
+                motor_stop();
+
+                current_target = COLOR_RED;
+                route_stage = 0U; /* dùng lại profile tốc độ của START -> POINT1 */
+
+                motor_turn_left(PWM_FORWARD);
+                delay_ms_tick(POINT4_TURN_MS);
 
                 motor_stop();
-                last_seen_side = 0;
+                recovery_mode = 0U;
+                recovery_first_lost_side = 0;
+                recovery_last_lost_side = 0;
                 continue;
             }
         }
@@ -615,50 +789,73 @@ int main(void)
         left_go  = is_target_color(left_res.idx, current_target);
         right_go = is_target_color(right_res.idx, current_target);
 
-        if (route_stage == 2U) {
-            search_fast_cur = PWM_SEARCH_GREEN_FAST;
-            search_slow_cur = PWM_SEARCH_GREEN_SLOW;
-            align_normal_cur = PWM_ALIGN_GREEN_NORMAL;
-            align_seen80_cur = PWM_ALIGN_GREEN_SEEN_80;
-        } else {
-            search_fast_cur = PWM_SEARCH_COMMON_FAST;
-            search_slow_cur = PWM_SEARCH_COMMON_SLOW;
-            align_normal_cur = PWM_ALIGN_COMMON_NORMAL;
-            align_seen80_cur = PWM_ALIGN_COMMON_SEEN_80;
-        }
+        get_motion_profile(route_stage,
+                           &reverse_normal_cur,
+                           &reverse_half_cur,
+                           &align_normal_cur,
+                           &align_seen80_cur);
 
-        if (left_go) {
-            last_left_on_ms = millis();
-            last_seen_side = -1;
-        }
-        if (right_go) {
-            last_right_on_ms = millis();
-            last_seen_side = +1;
-        }
+        if (left_go)  last_left_on_ms  = millis();
+        if (right_go) last_right_on_ms = millis();
 
-        if (left_go && right_go) {
-            motor_forward(PWM_FORWARD);
-        }
-        else if (!left_go && right_go) {
-            motor_forward_lr(align_normal_cur, align_seen80_cur);
-            last_seen_side = +1;
-        }
-        else if (left_go && !right_go) {
-            motor_forward_lr(align_seen80_cur, align_normal_cur);
-            last_seen_side = -1;
+        if (recovery_mode) {
+            if (left_go && right_go) {
+                recovery_mode = 0U;
+                recovery_first_lost_side = 0;
+                recovery_last_lost_side = 0;
+                motor_forward(PWM_FORWARD);
+            }
+            else if (left_go && !right_go) {
+                motor_forward_lr(align_seen80_cur, align_normal_cur);
+            }
+            else if (!left_go && right_go) {
+                motor_forward_lr(align_normal_cur, align_seen80_cur);
+            }
+            else {
+                left_reverse_pwm  = reverse_normal_cur;
+                right_reverse_pwm = reverse_normal_cur;
+
+                if ((recovery_first_lost_side == -1) && (recovery_last_lost_side == +1)) {
+                    left_reverse_pwm  = reverse_half_cur;
+                    right_reverse_pwm = reverse_normal_cur;
+                } else if ((recovery_first_lost_side == +1) && (recovery_last_lost_side == -1)) {
+                    left_reverse_pwm  = reverse_normal_cur;
+                    right_reverse_pwm = reverse_half_cur;
+                }
+
+                motor_reverse_lr(left_reverse_pwm, right_reverse_pwm);
+            }
         }
         else {
-            /* MẤT LINE: KHÔNG LÙI
-               TIẾN CHẾCH SANG PHÍA CẢM BIẾN CUỐI CÙNG NHẬN ĐƯỢC LINE */
-            if (last_seen_side < 0) {
-                /* lần cuối thấy line bên trái -> tiến chếch trái */
-                motor_forward_lr(search_slow_cur, search_fast_cur);
-            } else if (last_seen_side > 0) {
-                /* lần cuối thấy line bên phải -> tiến chếch phải */
-                motor_forward_lr(search_fast_cur, search_slow_cur);
-            } else {
-                /* chưa biết bên nào -> đi thẳng chậm để tìm lại */
-                motor_forward_lr(search_slow_cur, search_slow_cur);
+            if (left_go && right_go) {
+                motor_forward(PWM_FORWARD);
+            }
+            else if (!left_go && right_go) {
+                motor_forward_lr(align_normal_cur, align_seen80_cur);
+            }
+            else if (left_go && !right_go) {
+                motor_forward_lr(align_seen80_cur, align_normal_cur);
+            }
+            else {
+                if (last_left_on_ms < last_right_on_ms) {
+                    recovery_first_lost_side = -1;
+                    recovery_last_lost_side  = +1;
+                    left_reverse_pwm  = reverse_half_cur;
+                    right_reverse_pwm = reverse_normal_cur;
+                } else if (last_right_on_ms < last_left_on_ms) {
+                    recovery_first_lost_side = +1;
+                    recovery_last_lost_side  = -1;
+                    left_reverse_pwm  = reverse_normal_cur;
+                    right_reverse_pwm = reverse_half_cur;
+                } else {
+                    recovery_first_lost_side = 0;
+                    recovery_last_lost_side  = 0;
+                    left_reverse_pwm  = reverse_normal_cur;
+                    right_reverse_pwm = reverse_normal_cur;
+                }
+
+                recovery_mode = 1U;
+                motor_reverse_lr(left_reverse_pwm, right_reverse_pwm);
             }
         }
 
