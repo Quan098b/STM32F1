@@ -26,7 +26,7 @@
 #define DEBUG_UART              0
 
 #define PWM_PERIOD              999U
-#define PWM_FORWARD             200U
+#define PWM_FORWARD             220U
 #define PWM_BRAKE               999U
 
 #define SENSOR_LOOP_DELAY_MS    4U
@@ -41,8 +41,8 @@
 /* RED
    đã nới để bắt đỏ dễ hơn
 */
-#define RED_OVER_G_DELTA                71U
-#define RED_OVER_B_DELTA                27U
+#define RED_OVER_G_DELTA                55U
+#define RED_OVER_B_DELTA                18U
 
 /* BLUE */
 #define BLUE_OVER_R_DELTA               180U
@@ -62,7 +62,7 @@
 
 /* Điểm 1: RED -> BLUE */
 #define TRANSITION_TURN_MS      420U
-#define POINT1_STOP_MS          200U
+#define POINT1_STOP_MS          230U
 
 /* Điểm 2: BLUE -> GREEN */
 #define POINT2_STOP_MS          300U
@@ -79,12 +79,15 @@
    Sau khi tới điểm 4:
    1) phanh + dừng
    2) giật lùi 0.3s
-   3) mới quay trái
-   4) sau đó tiến từng nhịp để tìm line đỏ
+   3) quay trái
+   4) tiến thẳng 0.3s
+   5) sau đó tiến từng nhịp để tìm line đỏ
 */
 #define POINT4_REVERSE_MS              300U
 #define POINT4_REVERSE_PWM             180U
-#define POINT4_TURN_MS                 400U
+#define POINT4_TURN_MS                 300U
+#define POINT4_FORWARD_AFTER_TURN_MS   300U
+#define POINT4_FORWARD_AFTER_TURN_PWM  180U
 #define POINT4_SEARCH_RED_PWM          130U
 #define POINT4_SEARCH_RED_TIMEOUT_MS   1200U
 #define POINT4_SEARCH_RED_STEP_MS      8U
@@ -116,14 +119,14 @@
    ========================= */
 #define PWM_REVERSE_COMMON_NORMAL      210U
 #define PWM_REVERSE_COMMON_HALF        200U
-#define PWM_ALIGN_COMMON_NORMAL        440U
-#define PWM_ALIGN_COMMON_SEEN_80       380U
+#define PWM_ALIGN_COMMON_NORMAL        300U
+#define PWM_ALIGN_COMMON_SEEN_80       250U
 
 /* =========================
    ĐOẠN RIÊNG 1:
    POINT1 -> POINT2
    ========================= */
-#define PWM_REVERSE_P1_P2_NORMAL       220U
+#define PWM_REVERSE_P1_P2_NORMAL       240U
 #define PWM_REVERSE_P1_P2_HALF         150U
 #define PWM_ALIGN_P1_P2_NORMAL         180U
 #define PWM_ALIGN_P1_P2_SEEN_80        150U
@@ -132,7 +135,7 @@
    ĐOẠN RIÊNG 2:
    POINT2 -> POINT3
    ========================= */
-#define PWM_REVERSE_P2_P3_NORMAL       200U
+#define PWM_REVERSE_P2_P3_NORMAL       210U
 #define PWM_REVERSE_P2_P3_HALF         150U
 #define PWM_ALIGN_P2_P3_NORMAL         200U
 #define PWM_ALIGN_P2_P3_SEEN_80        180U
@@ -737,6 +740,7 @@ int main(void)
            - tới điểm 4 thì dừng
            - giật lùi 0.3s
            - quay trái
+           - tiến thẳng 0.3s
            - sau đó mới đi tìm lại line đỏ
            ========================= */
         if ((route_stage == 3U) && (current_target == COLOR_BLUE)) {
@@ -758,12 +762,12 @@ int main(void)
                 delay_ms_tick(POINT4_STOP_MS);
                 motor_stop();
 
-                /* ========= NOTE CHỖ ĐÃ SỬA =========
+                /* ========= NOTE CHỖ ĐÃ SỬA 1 =========
                    Giật lùi lại 0.3 giây trước khi quay
-                   Bạn chỉnh ở 2 dòng:
+                   Bạn chỉnh ở:
                    - POINT4_REVERSE_MS
                    - POINT4_REVERSE_PWM
-                   ================================== */
+                   ==================================== */
                 motor_reverse_lr(POINT4_REVERSE_PWM, POINT4_REVERSE_PWM);
                 delay_ms_tick(POINT4_REVERSE_MS);
                 motor_stop();
@@ -777,6 +781,17 @@ int main(void)
 
                 motor_turn_left(PWM_FORWARD);
                 delay_ms_tick(POINT4_TURN_MS);
+                motor_stop();
+
+                /* ========= NOTE CHỖ ĐÃ SỬA 2 =========
+                   Quay xong tiến thẳng thêm 0.3 giây
+                   rồi mới bắt đầu tìm line đỏ
+                   Bạn chỉnh ở:
+                   - POINT4_FORWARD_AFTER_TURN_MS
+                   - POINT4_FORWARD_AFTER_TURN_PWM
+                   ==================================== */
+                motor_forward(POINT4_FORWARD_AFTER_TURN_PWM);
+                delay_ms_tick(POINT4_FORWARD_AFTER_TURN_MS);
                 motor_stop();
 
                 search_start = millis();
